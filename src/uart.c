@@ -4,12 +4,31 @@
 #include <stdio.h>
 #include <errno.h>
 #include <stdlib.h>
+#include <string.h>
 #include "uart.h"
 
 
 static struct termios oldt_stdin, newt_stdin, oldt_uart, newt_uart;
 
-static void setup_stdin()
+
+// helper function to verify if changes to a termios struct were applied successfully
+static bool verify_tcsetattr(int fd, struct termios *termios_st)
+{
+	struct termios tmp = {0};
+
+	tcgetattr(fd, &tmp);
+
+	// compare termios structs that contain what was meant to be changed
+	// and what actually got changed
+	if (memcmp(termios_st, &tmp, sizeof(struct termios)) != 0) {
+		LOG_ERROR("Changing settings failed");
+		errno = ENOTTY;
+		return false;
+	}
+	return true;
+}
+
+static int setup_stdin()
 {
 	tcgetattr(STDIN_FILENO, &oldt_stdin);
 	newt_stdin = oldt_stdin;
@@ -17,7 +36,17 @@ static void setup_stdin()
 	newt_stdin.c_iflag &= ~(IXON | IXOFF | IXANY | INLCR | ICRNL | IGNCR);
 	newt_stdin.c_cc[VMIN] = 1;
 	newt_stdin.c_cc[VTIME] = 0;
-	tcsetattr(STDIN_FILENO, TCSANOW, &newt_stdin);
+	int ret = tcsetattr(STDIN_FILENO, TCSANOW, &newt_stdin);
+
+	// verify if new terminal settings were applied
+	if (ret < 0 || !verify_tcsetattr(STDIN_FILENO, &newt_stdin)) {
+		LOG_ERROR("Could not set up terminal settings.");
+		return -1;
+	}
+
+	tcflush(STDIN_FILENO, TCIOFLUSH);
+
+	return 0;
 }
 
 static int open_dev(char **dev)
@@ -25,7 +54,8 @@ static int open_dev(char **dev)
 	int uart_fd = -1;
 	// if user did not specify dev path, automatically attempt opening a path from list
 	if (*dev == NULL) {
-		printf("\e[35mDevice path not specified, attemping to find a device...\e[m\n");
+		// TODO: search for devs in FS instead of using a hardcoded list
+		LOG_WARN("Device path not specified, attemping to find a device...");
 		char *default_dev[] = {
 			"/dev/ttyUSB0",
 			"/dev/ttyUSB1",
@@ -34,17 +64,18 @@ static int open_dev(char **dev)
 		};
 		for (int i = 0; i < sizeof(default_dev) / sizeof(default_dev[0]); i++) {
 
-			// O_NONBLOCK would result in busy-wait implementation, while poll with infinite timeout idles in kernel
+			// O_NONBLOCK would result in busy-wait implementation,
+			// while poll with infinite timeout idles in kernel
 			uart_fd = open(default_dev[i], O_RDWR | O_NOCTTY);
 			if (uart_fd >= 0) {
 				*dev = default_dev[i];
 				break;
 			}
 		}
-		if (uart_fd == -1) {
-			fprintf(stderr, "\e[31mDevice could not be found automatically, please try the following:\n"
-					"1) Run with root permissions.\n"
-					"2) Specify the device path in the arguments.\e[m\n");
+		if (uart_fd < 0) {
+			LOG_ERROR("Device could not be found automatically, please try"
+				  "the following:\n1) Run with root permissions.\n"
+				  "2) Specify the device path in the arguments.");
 			errno = EPERM;
 			return -1;
 		}
@@ -53,43 +84,48 @@ static int open_dev(char **dev)
 		uart_fd = open(*dev, O_RDWR | O_NOCTTY);
 	}
 
-	if (uart_fd == -1) {
-		fprintf(stderr, "\e[31mCould not open device.\e[m\n");
+	if (uart_fd < 0) {
+		LOG_ERROR("Could not open device.");
 	}
 
 	return uart_fd;
 }
 
-bool set_baud(int uart_fd, unsigned *baud, bool set_now)
+int set_baud(int uart_fd, unsigned *baud, bool set_now)
 {
 	static_assert(B115200 == 115200U, "Baud rate macros are not equivalent to"
 			"corresponding int values. They should be manually converted.");
-
-	struct termios tmp = {0};
 
 	if (*baud == 0)
 		*baud = B115200;
 
 	cfsetspeed(&newt_uart, *baud);
 
-	// set attr right away and check if settings were applied successfully (for interactive baud selection)
+	// set attr right away and check if settings were applied successfully
+	// (for interactive baud selection)
 	if (set_now == true) {
+		struct termios tmp = {0};
 
 		int ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
-		WARN_HANDLER(ret < 0, "Failed to set baud")
+		if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
+			LOG_ERROR("Failed to set baud to %d", *baud);
+			return -1;
+		}
 
+		/*
 		tcgetattr(uart_fd, &tmp);
 
 		if ((cfgetispeed(&tmp) != *baud) || (cfgetospeed(&tmp) != *baud)) {
-			fprintf(stderr, "\e[31mFailed to set baud to %d\e[m\n", *baud);
+			LOG_ERROR("Failed to set baud to %d", *baud);
 			errno = EINVAL;
-			return false;
+			return -1;
 		}
+		*/
 
 		tcflush(uart_fd, TCIOFLUSH);
 	}
 
-	return true;
+	return 0;
 }
 
 static int set_data_bits(int *data_bits)
@@ -113,8 +149,9 @@ static int set_data_bits(int *data_bits)
 		newt_uart.c_cflag |= CS5;
 		break;
 	default:
-		fprintf(stderr, "\e[31mUnsupported data bit value: %d\e[m\n", *data_bits);
+		LOG_ERROR("Unsupported data bit value: %d", *data_bits);
 		errno = EINVAL;
+
 		return -1;
 	}
 }
@@ -167,14 +204,16 @@ static int set_parity_bit(char *parity_bit)
 	case 'm':
 	case 'S':
 	case 's':
-		fprintf(stderr, "\e[31mMark/Space parity not supported on this system\e[m\n");
+		LOG_ERROR("Mark/Space parity not supported on this system.");
 		errno = ENOTSUP;
+
 		return -1;
 #endif
 
 	default:
-		fprintf(stderr, "\e[31mUnsupported parity: %c\e[m\n", *parity_bit);
+		LOG_ERROR("Unsupported parity: %c", *parity_bit);
 		errno = EINVAL;
+
 		return -1;
 	}
 }
@@ -192,54 +231,20 @@ static int set_stop_bits(int *stop_bits)
 		newt_uart.c_cflag |= CSTOPB;
 		break;
 	default:
-		fprintf(stderr, "\e[31mUnsupported stop bits: %d\e[m\n", *stop_bits);
+		LOG_ERROR("Unsupported stop bits: %d", *stop_bits);
 		errno = EINVAL;
 		return -1;
 	}
 }
 
-// after setting UART params in init_uart, apply them to the dev and verify if settings were applied successfully
-static bool verify_tcsetattr(int uart_fd)
+static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
 {
-	struct termios tmp = {0};
-	tcgetattr(uart_fd, &tmp);
-
-	//check if baud was set properly
-	if ((cfgetispeed(&newt_uart) != cfgetispeed(&tmp)) || (cfgetospeed(&newt_uart) != cfgetospeed(&tmp))) {
-		errno = ENOTTY;
-		return false;
-	}
-	// check all other settings
-	if (newt_uart.c_cflag != tmp.c_cflag) {
-		errno = ENOTTY;
-		return false;
-	}
-
-	return true;
-}
-
-int init_uart(struct uart_conf_t *uart_conf)
-{
-	if (uart_conf == NULL) {
-		fprintf(stderr, "\e[31mPlease set up UART config struct.\e[m\n");
-		return -1;
-	}
-
 	int ret = 0;
-
-	// TODO: proper verification needed
-	setup_stdin();
-
-	int uart_fd = open_dev(&uart_conf->dev);
-	if (uart_fd == -1) {
-		perror(__func__);
-		return -1;
-	}
 
 	tcgetattr(uart_fd, &oldt_uart);
 	newt_uart = oldt_uart;
 
-	// set up uart tty
+	// set up raw-like uart tty
 	newt_uart.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP
         		     | INLCR | IGNCR | ICRNL | IXON);
 	newt_uart.c_oflag &= ~OPOST;
@@ -251,37 +256,86 @@ int init_uart(struct uart_conf_t *uart_conf)
 	set_baud(uart_fd, &uart_conf->baud, false);
 
 	ret = set_data_bits(&uart_conf->data_bits);
-	if (ret == -1) {
+	if (ret < 0) {
 		return -1;
 	}
-
 	ret = set_parity_bit(&uart_conf->parity_bit);
-	if (ret == -1) {
+	if (ret < 0) {
 		return -1;
 	}
-
 	ret = set_stop_bits(&uart_conf->stop_bits);
-	if (ret == -1) {
+	if (ret < 0) {
 		return -1;
 	}
 
 	// set up UART config and verify changes
 	ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
-	ERROR_HANDLER(ret < 0, __func__, close_uart(uart_fd))
-	ret = verify_tcsetattr(uart_fd);
-	ERROR_HANDLER(ret == 0, __func__, close_uart(uart_fd))
+	if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
+		LOG_ERROR("Failed to setup UART TTY");
+		close_uart(uart_fd);
+		return -1;
+	}
 	tcflush(uart_fd, TCIOFLUSH);
+
+	return 0;
+}
+
+int init_uart(struct uart_conf_t *uart_conf)
+{
+	if (uart_conf == NULL) {
+		LOG_ERROR("Please set up UART config struct.");
+		return -1;
+	}
+
+	int ret = 0;
+
+	// set up terminal for communication with UART dev
+	ret = setup_stdin();
+	if (ret < 0) {
+		perror(__func__);
+		return -1;
+	}
+
+	int uart_fd = open_dev(&uart_conf->dev);
+	if (uart_fd < 0) {
+		perror(__func__);
+		return -1;
+	}
+
+	ret = setup_uart(uart_fd, uart_conf);
+	if (ret < 0) {
+		perror(__func__);
+		return -1;
+	}
 
 	return uart_fd;
 }
 
 void close_uart(int uart_fd)
 {
-	// TODO: proper verification needed
-	tcsetattr(STDIN_FILENO, TCSANOW, &oldt_stdin);
-	if (uart_fd != -1) {
-		tcsetattr(uart_fd, TCSANOW, &oldt_uart);
+	int ret = -1;
 
+	fprintf(stderr, "\n");
+
+	// Restore and verify terminal settings
+	ret = tcsetattr(STDIN_FILENO, TCSANOW, &oldt_stdin);
+	if (ret < 0 || !verify_tcsetattr(STDIN_FILENO, &oldt_stdin)) {
+		LOG_ERROR("Error restoring terminal settings.");
+	}
+	tcflush(STDIN_FILENO, TCIOFLUSH);
+
+	LOG_WARN("Terminal settings were restored.");
+
+	// if UART dev was open restore termios settings, verify and close fd
+	if (uart_fd >= 0) {
+		ret = tcsetattr(uart_fd, TCSANOW, &oldt_uart);
+		if (ret < 0 || !verify_tcsetattr(uart_fd, &oldt_uart)) {
+			LOG_ERROR("Error restoring UART settings.");
+		}
+		tcflush(uart_fd, TCIOFLUSH);
+
+		LOG_WARN("UART settings were restored.");
 		close(uart_fd);
 	}
+	LOG_WARN("Exiting...");
 }

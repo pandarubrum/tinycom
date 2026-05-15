@@ -73,19 +73,23 @@ int main(int argc, char *argv[])
 		poll(fds, 2, -1);
 
 		if (fds[0].revents & POLLHUP) {	// if dev disconnects, exit
-			fprintf(stderr, "\n\e[31m%s disconnected, exiting.\e[m\n", uart_conf.dev);
-			close_uart(uart_fd);
+			close_uart(-1);
+			fprintf(stderr, "\e[31m%s disconnected, exiting.\e[m\n", uart_conf.dev);
 			return ENOENT;
 
 		} else if (fds[0].revents & POLLIN) { // incoming data from dev
 			rw_len = read(uart_fd, &c, 1);
-			WARN_HANDLER(rw_len <= 0, "Reading from UART failed...")
+			if (rw_len < 0) {
+				LOG_WARN("Reading from UART failed...");
+			}
 
 			printf("%c", c);
 			fflush(stdout);
 		} else if (fds[1].revents & POLLIN) { // incoming data from stdin
 			rw_len = read(0, &c, 1);
-			WARN_HANDLER(rw_len < 0, "Reading from STDIN failed")
+			if (rw_len < 0) {
+				LOG_WARN("Reading from STDIN failed...");
+			}
 
 			// CTRL + A exits program
 			if (c == QUIT) {
@@ -94,7 +98,9 @@ int main(int argc, char *argv[])
 				return EXIT_SUCCESS;
 			} else {
 				rw_len = write(uart_fd, &c, 1);
-				WARN_HANDLER(rw_len < 0, "Writing to UART failed...")
+				if (rw_len < 0) {
+					LOG_WARN("Writing to UART failed...");
+				}
 			}
 		}
 	}
