@@ -7,6 +7,7 @@
 #include <string.h>
 #include "uart.h"
 
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
 static struct termios oldt_stdin, newt_stdin, oldt_uart, newt_uart;
 
@@ -62,7 +63,7 @@ static int open_dev(char **dev)
 			"/dev/ttyACM0",
 			"/dev/ttyACM1",
 		};
-		for (int i = 0; i < sizeof(default_dev) / sizeof(default_dev[0]); i++) {
+		for (size_t i = 0; i < ARRAY_SIZE(default_dev); i++) {
 
 			// O_NONBLOCK would result in busy-wait implementation,
 			// while poll with infinite timeout idles in kernel
@@ -104,7 +105,6 @@ int set_baud(int uart_fd, unsigned *baud, bool set_now)
 	// set attr right away and check if settings were applied successfully
 	// (for interactive baud selection)
 	if (set_now == true) {
-		struct termios tmp = {0};
 
 		int ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
 		if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
@@ -112,23 +112,13 @@ int set_baud(int uart_fd, unsigned *baud, bool set_now)
 			return -1;
 		}
 
-		/*
-		tcgetattr(uart_fd, &tmp);
-
-		if ((cfgetispeed(&tmp) != *baud) || (cfgetospeed(&tmp) != *baud)) {
-			LOG_ERROR("Failed to set baud to %d", *baud);
-			errno = EINVAL;
-			return -1;
-		}
-		*/
-
 		tcflush(uart_fd, TCIOFLUSH);
 	}
 
 	return 0;
 }
 
-static int set_data_bits(int *data_bits)
+static int set_data_bits(unsigned *data_bits)
 {
 	newt_uart.c_cflag &= ~CSIZE;
 
@@ -154,6 +144,7 @@ static int set_data_bits(int *data_bits)
 
 		return -1;
 	}
+	return 0;
 }
 
 static int set_parity_bit(char *parity_bit)
@@ -216,9 +207,10 @@ static int set_parity_bit(char *parity_bit)
 
 		return -1;
 	}
+	return 0;
 }
 
-static int set_stop_bits(int *stop_bits)
+static int set_stop_bits(unsigned *stop_bits)
 {
 	switch (*stop_bits) {
 	case 0:
@@ -235,6 +227,7 @@ static int set_stop_bits(int *stop_bits)
 		errno = EINVAL;
 		return -1;
 	}
+	return 0;
 }
 
 static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
