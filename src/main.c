@@ -4,6 +4,7 @@
 #include <poll.h>
 #include <unistd.h>
 #include <errno.h>
+#include <stdbool.h>
 #include "uart.h"
 #include "UI.h"
 #include "utils.h"

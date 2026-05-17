@@ -5,6 +5,8 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdbool.h>
+#include <assert.h>
 #include "uart.h"
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
@@ -37,7 +39,7 @@ static bool verify_tcsetattr(int fd, struct termios *termios_st)
 	return true;
 }
 
-static int setup_stdin()
+static int setup_stdin(void)
 {
 	tcgetattr(STDIN_FILENO, &oldt_stdin);
 	newt_stdin = oldt_stdin;

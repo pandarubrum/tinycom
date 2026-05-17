@@ -1,5 +1,8 @@
 #pragma once
 
+#include <stdbool.h>
+
+
 // Struct that will contain all arguments from the user, must be initialized in main
 struct uart_conf_t {
 	char *dev;
