@@ -1,13 +1,5 @@
 #pragma once
 
-#define LOG_ERROR(fmt, ...) \
-    fprintf(stderr, "\033[31m%s:%d (%s): \033[1m" fmt "\033[m\n", \
-            __FILE__, __LINE__, __func__, ##__VA_ARGS__)
-
-#define LOG_WARN(fmt, ...) \
-    fprintf(stderr, "\033[35m%s:%d (%s): \033[1m" fmt "\033[m\n", \
-            __FILE__, __LINE__, __func__, ##__VA_ARGS__)
-
 // Struct that will contain all arguments from the user, must be initialized in main
 struct uart_conf_t {
 	char *dev;
@@ -18,7 +10,9 @@ struct uart_conf_t {
 };
 
 int set_baud(int uart_fd, unsigned *baud, bool set_now);
+int set_data_bits(int uart_fd, unsigned *data_bits, bool set_now);
+int set_parity_bit(int uart_fd, char *parity_bit, bool set_now);
+int set_stop_bits(int uart_fd, unsigned *stop_bits, bool set_now);
 
 int init_uart(struct uart_conf_t *uart_conf);
-
 void close_uart(int uart_fd);

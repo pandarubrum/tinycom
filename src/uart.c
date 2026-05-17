@@ -9,6 +9,14 @@
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
+#define LOG_ERROR(fmt, ...) \
+    fprintf(stderr, "\033[31m%s:%d (%s): \033[1m" fmt "\033[m\n", \
+            __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+
+#define LOG_WARN(fmt, ...) \
+    fprintf(stderr, "\033[35m%s:%d (%s): \033[1m" fmt "\033[m\n", \
+            __FILE__, __LINE__, __func__, ##__VA_ARGS__)
+
 static struct termios oldt_stdin, newt_stdin, oldt_uart, newt_uart;
 
 
@@ -118,7 +126,7 @@ int set_baud(int uart_fd, unsigned *baud, bool set_now)
 	return 0;
 }
 
-static int set_data_bits(unsigned *data_bits)
+int set_data_bits(int uart_fd, unsigned *data_bits, bool set_now)
 {
 	newt_uart.c_cflag &= ~CSIZE;
 
@@ -144,10 +152,22 @@ static int set_data_bits(unsigned *data_bits)
 
 		return -1;
 	}
+
+	if (set_now == true) {
+
+		int ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
+		if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
+			LOG_ERROR("Failed to set data bits to %u", *data_bits);
+			return -1;
+		}
+
+		tcflush(uart_fd, TCIOFLUSH);
+	}
+
 	return 0;
 }
 
-static int set_parity_bit(char *parity_bit)
+int set_parity_bit(int uart_fd, char *parity_bit, bool set_now)
 {
 	switch (*parity_bit) {
 	case '\0':
@@ -207,10 +227,22 @@ static int set_parity_bit(char *parity_bit)
 
 		return -1;
 	}
+
+	if (set_now == true) {
+
+		int ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
+		if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
+			LOG_ERROR("Failed to set parity bit to %c", *parity_bit);
+			return -1;
+		}
+
+		tcflush(uart_fd, TCIOFLUSH);
+	}
+
 	return 0;
 }
 
-static int set_stop_bits(unsigned *stop_bits)
+int set_stop_bits(int uart_fd, unsigned *stop_bits, bool set_now)
 {
 	switch (*stop_bits) {
 	case 0:
@@ -227,6 +259,18 @@ static int set_stop_bits(unsigned *stop_bits)
 		errno = EINVAL;
 		return -1;
 	}
+
+	if (set_now == true) {
+
+		int ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
+		if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
+			LOG_ERROR("Failed to set stop bits to %u", *stop_bits);
+			return -1;
+		}
+
+		tcflush(uart_fd, TCIOFLUSH);
+	}
+
 	return 0;
 }
 
@@ -248,15 +292,15 @@ static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
 
 	set_baud(uart_fd, &uart_conf->baud, false);
 
-	ret = set_data_bits(&uart_conf->data_bits);
+	ret = set_data_bits(uart_fd, &uart_conf->data_bits, false);
 	if (ret < 0) {
 		return -1;
 	}
-	ret = set_parity_bit(&uart_conf->parity_bit);
+	ret = set_parity_bit(uart_fd, &uart_conf->parity_bit, false);
 	if (ret < 0) {
 		return -1;
 	}
-	ret = set_stop_bits(&uart_conf->stop_bits);
+	ret = set_stop_bits(uart_fd, &uart_conf->stop_bits, false);
 	if (ret < 0) {
 		return -1;
 	}
@@ -330,5 +374,4 @@ void close_uart(int uart_fd)
 		LOG_WARN("UART settings were restored.");
 		close(uart_fd);
 	}
-	LOG_WARN("Exiting...");
 }

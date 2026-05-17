@@ -5,16 +5,9 @@
 #include <unistd.h>
 #include <errno.h>
 #include "uart.h"
+#include "UI.h"
+#include "utils.h"
 
-#define QUIT	0x01
-
-
-static void print_usage(const char *prog)
-{
-	printf("Usage: %s [-b baud] [-d data_bits] [-p parity] [-s stop_bits] [device]\n", prog);
-	printf("\nExample: %s -b 115200 -d 8 -p N -s 1 /dev/ttyUSB0\n\nAll flags are completely optional "
-	       "and if dev path is not specified,\nan attempt at automatically finding a device will be made.\n", prog);
-}
 
 int main(int argc, char *argv[])
 {
@@ -25,18 +18,34 @@ int main(int argc, char *argv[])
 
 	int opt;
 	while ((opt = getopt(argc, argv, "b:d:p:s:h")) != -1) {
+		unsigned u;
 		switch (opt) {
 		case 'b':
-			uart_conf.baud = atoi(optarg);
+			u = strtouint(optarg);
+			if (errno != 0) {
+				MENU_ERROR("Invalid baud rate.");
+				return EINVAL;
+			}
+			uart_conf.baud = u;
 			break;
 		case 'd':
-			uart_conf.data_bits = atoi(optarg);
+			u = strtouint(optarg);
+			if (errno != 0) {
+				MENU_ERROR("Invalid data bit value.");
+				return EINVAL;
+			}
+			uart_conf.data_bits = u;
 			break;
 		case 'p':
 			uart_conf.parity_bit = optarg[0];
 			break;
 		case 's':
-			uart_conf.stop_bits = atoi(optarg);
+			u = strtouint(optarg);
+			if (errno != 0) {
+				MENU_ERROR("Invalid stop bit value.");
+				return EINVAL;
+			}
+			uart_conf.stop_bits = u;
 			break;
 		case 'h':
 			print_usage(argv[0]);
@@ -57,11 +66,13 @@ int main(int argc, char *argv[])
 		return EXIT_FAILURE;
 	}
 
-	printf("\e[2J\e[H\e[1;7m Connected to %s | %u %d%c%d | \e[22mExit: CTRL + A "
-		"\e[m\n\n\e[35mTerminal is ready\e[m\n", uart_conf.dev, uart_conf.baud,
-		uart_conf.data_bits, uart_conf.parity_bit, uart_conf.stop_bits);
+	fprintf(stderr, "\033[2J\033[H\033[1;7m "
+			"Connected to \033[4m%s\033[24m | %u %d%c%d | \033[22mExit: CTRL + A "
+			"\033[m\n", uart_conf.dev, uart_conf.baud, uart_conf.data_bits,
+			uart_conf.parity_bit, uart_conf.stop_bits);
+	TTY_READY();
 
-	struct pollfd fds[] = {
+	struct pollfd poll_fds[] = {
 		{uart_fd, POLLIN, 0},
 		{STDIN_FILENO, POLLIN, 0}
 	};
@@ -70,36 +81,40 @@ int main(int argc, char *argv[])
 
 	while (1) {
 
-		poll(fds, 2, -1);
+		poll(poll_fds, 2, -1);
 
-		if (fds[0].revents & POLLHUP) {	// if dev disconnects, exit
+		if (poll_fds[0].revents & POLLHUP) {	// if dev disconnects, exit
 			close_uart(-1);
-			fprintf(stderr, "\e[31m%s disconnected, exiting.\e[m\n", uart_conf.dev);
+			fprintf(stderr, "\033[31m%s disconnected, exiting.\033[m\n", uart_conf.dev);
 			return ENOENT;
 
-		} else if (fds[0].revents & POLLIN) { // incoming data from dev
+		} else if (poll_fds[0].revents & POLLIN) { // incoming data from dev
 			rw_len = read(uart_fd, &c, 1);
 			if (rw_len < 0) {
-				LOG_WARN("Reading from UART failed...");
+				MENU_ERROR("Reading from UART failed...");
 			}
 
 			printf("%c", c);
 			fflush(stdout);
-		} else if (fds[1].revents & POLLIN) { // incoming data from stdin
+		} else if (poll_fds[1].revents & POLLIN) { // incoming data from stdin
 			rw_len = read(0, &c, 1);
 			if (rw_len < 0) {
-				LOG_WARN("Reading from STDIN failed...");
+				MENU_ERROR("Reading from STDIN failed...");
 			}
 
-			// CTRL + A exits program
-			if (c == QUIT) {
-				fprintf(stderr, "\n\e[35mConnection has been terminated.\e[m\n");
-				close_uart(uart_fd);
-				return EXIT_SUCCESS;
+			// CTRL + A opens menu
+			if (c == MENU) {
+				int ret = menu(uart_fd, &uart_conf, poll_fds, 2);
+				if (ret < 0) {
+					close_uart(uart_fd);
+					MENU_ERROR("Connection has been terminated.");
+					exit(EXIT_SUCCESS);
+				}
+
 			} else {
 				rw_len = write(uart_fd, &c, 1);
 				if (rw_len < 0) {
-					LOG_WARN("Writing to UART failed...");
+					MENU_ERROR("Writing to UART failed...");
 				}
 			}
 		}
