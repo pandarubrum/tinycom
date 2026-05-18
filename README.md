@@ -38,4 +38,4 @@ build/tinycom -h
 - `tinycom` running on Debian (`x86_64`), Linux kernel `7.0.4+deb14-amd64`, glibc `2.42-16`
 - LicheePi 4A (`riscv64`) running Debian, Linux kernel `6.6.119-th1520`
 - ESP32-C3 (`riscv64`)
-- Arduino Uno R3 Atmega328P
+- Arduino Uno R3 ATmega328P
