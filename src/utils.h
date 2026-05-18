@@ -1,10 +1,12 @@
 #pragma once
 
 
+/* Macros for key strokes used in the menu */
 #define ENTER	0x0d
 #define ESC	0x1b
 #define MENU	0x01
 
+/* List of macros for printing info, warning, error msgs or menu TUI */
 #define TTY_READY() \
 	fprintf(stderr, "\n\n\033[1;32;7m Terminal is ready \033[m\n\n")
 
@@ -36,6 +38,18 @@
             ##__VA_ARGS__)
 
 
+/*
+ * Prints usage:
+ *
+ * prog		program name
+ */
 void print_usage(const char *prog);
 
+/*
+ * Convert str to unsigned int:
+ *
+ * str		pointer to a string that needs to be converted to a uint
+ *
+ * returns:	value on success, 0 is success if errno == 0, otherwise it is treated as an error
+ */
 unsigned strtouint(const char *str);

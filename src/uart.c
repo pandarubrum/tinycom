@@ -22,15 +22,18 @@
 static struct termios oldt_stdin, newt_stdin, oldt_uart, newt_uart;
 
 
-// helper function to verify if changes to a termios struct were applied successfully
+/*
+ * Verify that terminal changes were actually applied.
+ *
+ * tcsetattr() can silently fail to apply some settings, so partial
+ * failures must be caught and reported.
+ */
 static bool verify_tcsetattr(int fd, struct termios *termios_st)
 {
 	struct termios tmp = {0};
 
 	tcgetattr(fd, &tmp);
 
-	// compare termios structs that contain what was meant to be changed
-	// and what actually got changed
 	if (memcmp(termios_st, &tmp, sizeof(struct termios)) != 0) {
 		LOG_ERROR("Changing settings failed");
 		errno = ENOTTY;
@@ -39,17 +42,21 @@ static bool verify_tcsetattr(int fd, struct termios *termios_st)
 	return true;
 }
 
+/*
+ * Set up stdin for raw, non-buffered input so that text and control characters
+ * are properly sent to the device, and only the device's output is shown on terminal
+ */
 static int setup_stdin(void)
 {
 	tcgetattr(STDIN_FILENO, &oldt_stdin);
 	newt_stdin = oldt_stdin;
+
 	newt_stdin.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
 	newt_stdin.c_iflag &= ~(IXON | IXOFF | IXANY | INLCR | ICRNL | IGNCR);
 	newt_stdin.c_cc[VMIN] = 1;
 	newt_stdin.c_cc[VTIME] = 0;
 	int ret = tcsetattr(STDIN_FILENO, TCSANOW, &newt_stdin);
 
-	// verify if new terminal settings were applied
 	if (ret < 0 || !verify_tcsetattr(STDIN_FILENO, &newt_stdin)) {
 		LOG_ERROR("Could not set up terminal settings.");
 		return -1;
@@ -60,12 +67,23 @@ static int setup_stdin(void)
 	return 0;
 }
 
+/*
+ * Open the UART device automatically and report if it fails
+ *
+ * Attempts to open common USB-to-serial device paths automatically.
+ * Currently checks ttyUSB* and ttyACM* devices (most USB adapters).
+ *
+ * Note: Built-in serial ports (ttyS*) are NOT in the auto-detect list.
+ * They can be specified via command-line argument if needed.
+ *
+ * TODO: Search filesystem dynamically instead of using hardcoded list.
+ */
 static int open_dev(char **dev)
 {
 	int uart_fd = -1;
-	// if user did not specify dev path, automatically attempt opening a path from list
+
 	if (*dev == NULL) {
-		// TODO: search for devs in FS instead of using a hardcoded list
+
 		LOG_WARN("Device path not specified, attemping to find a device...");
 		char *default_dev[] = {
 			"/dev/ttyUSB0",
@@ -75,8 +93,8 @@ static int open_dev(char **dev)
 		};
 		for (size_t i = 0; i < ARRAY_SIZE(default_dev); i++) {
 
-			// O_NONBLOCK would result in busy-wait implementation,
-			// while poll with infinite timeout idles in kernel
+			/* O_NONBLOCK would result in busy-wait implementation,
+			 * while poll() with infinite timeout idles in kernel */
 			uart_fd = open(default_dev[i], O_RDWR | O_NOCTTY);
 			if (uart_fd >= 0) {
 				*dev = default_dev[i];
@@ -102,6 +120,18 @@ static int open_dev(char **dev)
 	return uart_fd;
 }
 
+/*
+ * Set UART baud rate
+ *
+ * Allowed values are from 0 to UINT_MAX.
+ *
+ * Some systems use different encoding values and an assertion is made to verify that
+ * corresponding uint values can be used. If it fails, a switch-case should be manually
+ * added to map user input to the correct macro.
+ *
+ * If being set in interactive mode (set_now == true), apply changes immediately and
+ * verify that they were successfully applied.
+ */
 int set_baud(int uart_fd, unsigned *baud, bool set_now)
 {
 	static_assert(B115200 == 115200U, "Baud rate macros are not equivalent to"
@@ -112,8 +142,6 @@ int set_baud(int uart_fd, unsigned *baud, bool set_now)
 
 	cfsetspeed(&newt_uart, *baud);
 
-	// set attr right away and check if settings were applied successfully
-	// (for interactive baud selection)
 	if (set_now == true) {
 
 		int ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
@@ -128,6 +156,9 @@ int set_baud(int uart_fd, unsigned *baud, bool set_now)
 	return 0;
 }
 
+/*
+ * Set data bits in the range 5-8
+ */
 int set_data_bits(int uart_fd, unsigned *data_bits, bool set_now)
 {
 	newt_uart.c_cflag &= ~CSIZE;
@@ -169,6 +200,12 @@ int set_data_bits(int uart_fd, unsigned *data_bits, bool set_now)
 	return 0;
 }
 
+/*
+ * Set parity bit
+ *
+ * Set the parity bit to an allowed value. On some systems, MARK and SPACE parity require
+ * the CMSPAR flag which is not available on all platforms, and a check is made.
+ */
 int set_parity_bit(int uart_fd, char *parity_bit, bool set_now)
 {
 	switch (*parity_bit) {
@@ -244,6 +281,11 @@ int set_parity_bit(int uart_fd, char *parity_bit, bool set_now)
 	return 0;
 }
 
+/*
+ * Set stop bits
+ *
+ * Set the stop bits to 1 or 2.
+ */
 int set_stop_bits(int uart_fd, unsigned *stop_bits, bool set_now)
 {
 	switch (*stop_bits) {
@@ -276,6 +318,14 @@ int set_stop_bits(int uart_fd, unsigned *stop_bits, bool set_now)
 	return 0;
 }
 
+/*
+ * Configure UART device
+ *
+ * Disable all input/output processing (newline conversion, flow control, etc.)
+ * for a raw byte-for-byte communication with the serial device
+ *
+ * Returns -1 on failure if the setup failed in setting the new values or applying them.
+ */
 static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
 {
 	int ret = 0;
@@ -283,7 +333,6 @@ static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
 	tcgetattr(uart_fd, &oldt_uart);
 	newt_uart = oldt_uart;
 
-	// set up raw-like uart tty
 	newt_uart.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP
         		     | INLCR | IGNCR | ICRNL | IXON);
 	newt_uart.c_oflag &= ~OPOST;
@@ -307,7 +356,6 @@ static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
 		return -1;
 	}
 
-	// set up UART config and verify changes
 	ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
 	if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
 		LOG_ERROR("Failed to setup UART TTY");
@@ -319,6 +367,11 @@ static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
 	return 0;
 }
 
+/*
+ * Initialize UART device and configure terminal for serial communication
+ *
+ * Acts as the "main" of this library.
+ */
 int init_uart(struct uart_conf_t *uart_conf)
 {
 	if (uart_conf == NULL) {
@@ -328,7 +381,6 @@ int init_uart(struct uart_conf_t *uart_conf)
 
 	int ret = 0;
 
-	// set up terminal for communication with UART dev
 	ret = setup_stdin();
 	if (ret < 0) {
 		perror(__func__);
@@ -350,6 +402,12 @@ int init_uart(struct uart_conf_t *uart_conf)
 	return uart_fd;
 }
 
+/*
+ * Restore original terminal settings and close UART device
+ *
+ * Called on exit to leave the terminal in a usable state.
+ * Always restores stdin and only restores UART if it is open.
+ */
 void close_uart(int uart_fd)
 {
 	int ret = -1;

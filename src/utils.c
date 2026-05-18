@@ -4,6 +4,7 @@
 #include <limits.h>
 
 
+/* Print usage when running the program with the -h flag */
 void print_usage(const char *prog)
 {
 	printf("Usage: %s [-b baud] [-d data_bits] [-p parity] [-s stop_bits] [device]\n", prog);
@@ -12,6 +13,7 @@ void print_usage(const char *prog)
 	       "a device will be made.\n", prog);
 }
 
+/* Convert a str into an unsigned int */
 unsigned strtouint(const char *str)
 {
 	errno = 0;

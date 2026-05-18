@@ -12,6 +12,7 @@
 #include "utils.h"
 
 
+/* Set baud in the interactive menu, poll() checks if dev was disconnected */
 static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd, unsigned *baud)
 {
 	char c = '\0';
@@ -81,6 +82,7 @@ static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd
 	}
 }
 
+/* Set data bits in the interactive menu, poll() checks if the dev was disconnected */
 static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 			  int uart_fd, unsigned *data_bits)
 {
@@ -152,6 +154,7 @@ static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 	}
 }
 
+/* Set parity bit in the interactive menu, poll() checks if the dev was disconnected */
 static int menu_parity_bit(struct pollfd *poll_fds, nfds_t poll_fds_count,
 			   int uart_fd, char *parity_bit)
 {
@@ -221,6 +224,7 @@ static int menu_parity_bit(struct pollfd *poll_fds, nfds_t poll_fds_count,
 	}
 }
 
+/* Set stop bits in the interactive menu, poll() checks if the dev was disconnected */
 static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 				int uart_fd, unsigned *stop_bits)
 {
@@ -282,6 +286,10 @@ static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 	}
 }
 
+/* Interactive menu for setting baud, data, parity and stop bits. poll() checks if there is
+ * incoming data from UART while the menu is on, and if the dev disconnected.
+ * Data incoming from the dev will be buffered while interacting with the menu, and shown on the
+ * screen after going back to terminal. */
 int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, int poll_fds_count)
 {
 	char c = '\0';
@@ -304,17 +312,21 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 	while (true) {
 
 		poll(poll_fds, poll_fds_count, -1);
+
+		/* Device disconnected */
 		if (poll_fds[0].revents & POLLHUP) {
 			close_uart(-1);
 			MENU_ERROR("%s disconnected, exiting.", uart_conf->dev);
 			exit(ENOENT);
 
-		} else if (!incoming_data && poll_fds[0].revents & POLLIN) { // data from dev
+		/* Data coming from UART */
+		} else if (!incoming_data && poll_fds[0].revents & POLLIN) {
 			incoming_data = true;
 			MENU_WARN("\033[2AData incoming from UART dev.");
 			MENU_PROMPT("Enter you choice");
 
-		} else if (poll_fds[1].revents & POLLIN) { // data from stdin
+		/* Data coming from user */
+		} else if (poll_fds[1].revents & POLLIN) {
 			read(STDIN_FILENO, &c, 1);
 
 			switch (c) {
