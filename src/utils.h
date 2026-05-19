@@ -19,7 +19,7 @@
             ##__VA_ARGS__)
 
 #define MENU_PROMPT(fmt) \
-	fprintf(stderr, fmt " \033[1m>\033[m "); fflush(stderr)
+	fprintf(stderr, fmt " \033[1m>\033[m ");
 
 #define MENU_MSG(fmt, ...) \
 	fprintf(stderr, "\n\033[32m" fmt "\033[m\n", \

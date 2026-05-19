@@ -22,10 +22,10 @@ static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd
 
 	MENU_TITLE("Baud selection");
 	MENU_OPTS("Valid values: 0 - %u\n"
-		  "(0 sets baud to default value 115200\n\n"
+		  "(0 sets baud to default value 115200)\n\n"
 		  "\tC-a|ESC\tback to terminal\n"
 		  "\tq\tquit", UINT_MAX);
-	MENU_PROMPT("Enter you choice");
+	MENU_PROMPT("Enter your choice");
 
 	while (true) {
 
@@ -56,14 +56,14 @@ static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd
 			unsigned u = strtouint(buf);
 			if (errno != 0) {
 				MENU_ERROR("Invalid input");
-				MENU_PROMPT("Enter you choice");
+				MENU_PROMPT("Enter your choice");
 				continue;
 			}
 
 			ret = set_baud(uart_fd, &u, true);
 			if (ret < 0) {
 				MENU_ERROR("Error setting baud, try again");
-				MENU_PROMPT("Enter you choice");
+				MENU_PROMPT("Enter your choice");
 				continue;
 			}
 
@@ -100,7 +100,7 @@ static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 		  "\t5\t5 bits\n\n"
 		  "\tC-a|ESC\tback to terminal\n"
 		  "\tq\tquit");
-	MENU_PROMPT("Enter you choice");
+	MENU_PROMPT("Enter your choice");
 
 	while (true) {
 		poll(poll_fds, poll_fds_count, -1);
@@ -117,7 +117,7 @@ static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 		switch (c) {
 		default:
 			INVAL_INPUT("%c", c);
-			MENU_PROMPT("Enter you choice");
+			MENU_PROMPT("Enter your choice");
 			/* fallthrough */
 		case ENTER:
 			continue;
@@ -130,14 +130,14 @@ static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 			u = strtouint(buf);
 			if (errno != 0) {
 				INVAL_INPUT("%c", c);
-				MENU_PROMPT("Enter you choice");
+				MENU_PROMPT("Enter your choice");
 				continue;
 			}
 
 			ret = set_data_bits(uart_fd, &u, true);
 			if (ret < 0) {
 				MENU_ERROR("Error setting data bits, try again");
-				MENU_PROMPT("Enter you choice");
+				MENU_PROMPT("Enter your choice");
 				continue;
 			}
 			*data_bits = u;
@@ -239,7 +239,7 @@ static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 		  "\t2\t2 bits\n\n"
 		  "\tC-a|ESC\tback to terminal\n"
 		  "\tq\tquit");
-	MENU_PROMPT("Enter you choice");
+	MENU_PROMPT("Enter your choice");
 
 	while (true) {
 		poll(poll_fds, poll_fds_count, 0);
@@ -260,14 +260,14 @@ static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 
 			if (errno != 0) {
 				INVAL_INPUT("%c", c);
-				MENU_PROMPT("Enter you choice");
+				MENU_PROMPT("Enter your choice");
 				continue;
 			}
 
 			ret = set_stop_bits(uart_fd, &u, true);
 			if (ret < 0) {
 				MENU_ERROR("Error setting stop bits, try again.");
-				MENU_PROMPT("Enter you choice");
+				MENU_PROMPT("Enter your choice");
 				continue;
 			}
 			*stop_bits = u;
@@ -307,7 +307,7 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 			"\tq\tquit",
 			uart_conf->dev, uart_conf->baud, uart_conf->data_bits,
 			uart_conf->parity_bit, uart_conf->stop_bits);
-	MENU_PROMPT("Enter you choice");
+	MENU_PROMPT("Enter your choice");
 
 	while (true) {
 
@@ -323,7 +323,7 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 		} else if (!incoming_data && poll_fds[0].revents & POLLIN) {
 			incoming_data = true;
 			MENU_WARN("\033[2AData incoming from UART dev.");
-			MENU_PROMPT("Enter you choice");
+			MENU_PROMPT("Enter your choice");
 
 		/* Data coming from user */
 		} else if (poll_fds[1].revents & POLLIN) {
@@ -332,7 +332,7 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 			switch (c) {
 			default:
 				INVAL_INPUT("%c", c);
-				MENU_PROMPT("Enter you choice");
+				MENU_PROMPT("Enter your choice");
 				/* fallthrough */
 			case ENTER:
 				continue;

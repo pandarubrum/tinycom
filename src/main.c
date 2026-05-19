@@ -19,7 +19,6 @@
  *
  * Usage: build/tinycom -b 115200 -d 8 -p N -s 1 /dev/ttyUSB0
  */
-
 int main(int argc, char *argv[])
 {
 	const char *filename = strrchr(argv[0], '/');
@@ -98,7 +97,7 @@ int main(int argc, char *argv[])
 		/* Device disconnected */
 		if (poll_fds[0].revents & POLLHUP) {
 			close_uart(-1);
-			fprintf(stderr, "\033[31m%s disconnected, exiting.\033[m\n", uart_conf.dev);
+			MENU_ERROR("%s disconnected, exiting.", uart_conf.dev);
 			return ENOENT;
 
 		/* Data from device */
@@ -123,7 +122,7 @@ int main(int argc, char *argv[])
 				int ret = menu(uart_fd, &uart_conf, poll_fds, 2);
 				if (ret < 0) {
 					close_uart(uart_fd);
-					MENU_ERROR("Connection has been terminated.");
+					MENU_MSG("Connection has been terminated, exiting.");
 					exit(EXIT_SUCCESS);
 				}
 
