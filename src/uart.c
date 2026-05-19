@@ -37,31 +37,6 @@ static bool verify_tcsetattr(int fd, struct termios *termios_st)
 }
 
 /*
- * Set up stdin for raw, non-buffered input so that text and control characters
- * are properly sent to the device, and only the device's output is shown on terminal
- */
-static int setup_stdin(void)
-{
-	tcgetattr(STDIN_FILENO, &oldt_stdin);
-	newt_stdin = oldt_stdin;
-
-	newt_stdin.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
-	newt_stdin.c_iflag &= ~(IXON | IXOFF | IXANY | INLCR | ICRNL | IGNCR);
-	newt_stdin.c_cc[VMIN] = 1;
-	newt_stdin.c_cc[VTIME] = 0;
-	int ret = tcsetattr(STDIN_FILENO, TCSANOW, &newt_stdin);
-
-	if (ret < 0 || !verify_tcsetattr(STDIN_FILENO, &newt_stdin)) {
-		LOG_ERROR("Could not set up terminal settings.");
-		return -1;
-	}
-
-	tcflush(STDIN_FILENO, TCIOFLUSH);
-
-	return 0;
-}
-
-/*
  * Open the UART device automatically and report if it fails
  *
  * Attempts to open common USB-to-serial device paths automatically.
@@ -319,8 +294,6 @@ int set_stop_bits(int uart_fd, unsigned *stop_bits, bool set_now)
  */
 static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
 {
-	int ret = 0;
-
 	tcgetattr(uart_fd, &oldt_uart);
 	newt_uart = oldt_uart;
 
@@ -334,7 +307,7 @@ static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
 
 	set_baud(uart_fd, &uart_conf->baud, false);
 
-	ret = set_data_bits(uart_fd, &uart_conf->data_bits, false);
+	int ret = set_data_bits(uart_fd, &uart_conf->data_bits, false);
 	if (ret < 0) {
 		return -1;
 	}
@@ -359,6 +332,29 @@ static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
 }
 
 /*
+ * Set up TTY for raw, non-buffered input so that text and control characters
+ * are properly sent to the device, and only the device's output is shown on terminal
+ */
+static int setup_stdin(void)
+{
+	tcgetattr(STDIN_FILENO, &oldt_stdin);
+	newt_stdin = oldt_stdin;
+
+	newt_stdin.c_lflag &= ~(ICANON | ECHO | ISIG | IEXTEN);
+	newt_stdin.c_iflag &= ~(IXON | IXOFF | IXANY | INLCR | ICRNL | IGNCR);
+	newt_stdin.c_cc[VMIN] = 1;
+	newt_stdin.c_cc[VTIME] = 0;
+	int ret = tcsetattr(STDIN_FILENO, TCSADRAIN, &newt_stdin);
+
+	if (ret < 0 || !verify_tcsetattr(STDIN_FILENO, &newt_stdin)) {
+		MENU_ERROR("Could not set up terminal settings.");
+		return -1;
+	}
+
+	return 0;
+}
+
+/*
  * Initialize UART device and configure terminal for serial communication
  *
  * Acts as the "main" of this library.
@@ -370,21 +366,19 @@ int init_uart(struct uart_conf_t *uart_conf)
 		return -1;
 	}
 
-	int ret = 0;
-
-	ret = setup_stdin();
-	if (ret < 0) {
-		perror(__func__);
-		return -1;
-	}
-
 	int uart_fd = open_dev(&uart_conf->dev);
 	if (uart_fd < 0) {
 		perror(__func__);
 		return -1;
 	}
 
-	ret = setup_uart(uart_fd, uart_conf);
+	int ret = setup_uart(uart_fd, uart_conf);
+	if (ret < 0) {
+		perror(__func__);
+		return -1;
+	}
+
+	ret = setup_stdin();
 	if (ret < 0) {
 		perror(__func__);
 		return -1;
@@ -407,5 +401,16 @@ void close_uart(int uart_fd)
 
 		MENU_MSG("UART settings were restored.");
 		close(uart_fd);
+	}
+
+	/* Restore and verify TTY settings */
+	if (memcmp(&oldt_stdin, &newt_stdin, (sizeof(struct termios))) != 0) {
+		int ret = tcsetattr(STDIN_FILENO, TCSADRAIN, &oldt_stdin);
+		if (ret < 0 || !verify_tcsetattr(STDIN_FILENO, &oldt_stdin)) {
+			MENU_ERROR("Error restoring terminal settings.");
+			return;
+		}
+
+		MENU_MSG("Terminal settings were restored.");
 	}
 }
