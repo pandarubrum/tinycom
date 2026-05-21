@@ -28,11 +28,11 @@ static int menu_paste_file(struct pollfd *poll_fds, nfds_t poll_fds_count, int u
 	while (true) {
 
 		poll(poll_fds, poll_fds_count, -1);
-		if (poll_fds[0].revents & POLLHUP) {
+		if (poll_fds[UART_PFD].revents & POLLHUP) {
 			close_uart(-1);
 			MENU_ERROR("Device disconnected, exiting.");
 			exit(ENOENT);
-		} else if (!poll_fds[1].revents & POLLIN) {
+		} else if (!(poll_fds[STDIN_PFD].revents & POLLIN)) {
 			continue;
 		}
 
@@ -138,11 +138,11 @@ static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd
 	while (true) {
 
 		poll(poll_fds, poll_fds_count, -1);
-		if (poll_fds[0].revents & POLLHUP) {
+		if (poll_fds[UART_PFD].revents & POLLHUP) {
 			close_uart(-1);
 			MENU_ERROR("Device disconnected, exiting.");
 			exit(ENOENT);
-		} else if (!poll_fds[1].revents & POLLIN) {
+		} else if (!(poll_fds[STDIN_PFD].revents & POLLIN)) {
 			continue;
 		}
 
@@ -212,11 +212,11 @@ static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 
 	while (true) {
 		poll(poll_fds, poll_fds_count, -1);
-		if (poll_fds[0].revents & POLLHUP) {
+		if (poll_fds[UART_PFD].revents & POLLHUP) {
 			close_uart(-1);
 			MENU_ERROR("Device disconnected, exiting.");
 			exit(ENOENT);
-		} else if (!poll_fds[1].revents & POLLIN) {
+		} else if (!(poll_fds[STDIN_PFD].revents & POLLIN)) {
 			continue;
 		}
 
@@ -282,11 +282,11 @@ static int menu_parity_bit(struct pollfd *poll_fds, nfds_t poll_fds_count,
 
 	while (true) {
 		poll(poll_fds, poll_fds_count, -1);
-		if (poll_fds[0].revents & POLLHUP) {
+		if (poll_fds[UART_PFD].revents & POLLHUP) {
 			close_uart(-1);
 			MENU_ERROR("Device disconnected, exiting.");
 			exit(ENOENT);
-		} else if (!poll_fds[1].revents & POLLIN) {
+		} else if (!(poll_fds[STDIN_PFD].revents & POLLIN)) {
 			continue;
 		}
 
@@ -351,11 +351,11 @@ static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 
 	while (true) {
 		poll(poll_fds, poll_fds_count, 0);
-		if (poll_fds[0].revents & POLLHUP) {
+		if (poll_fds[UART_PFD].revents & POLLHUP) {
 			close_uart(-1);
 			MENU_ERROR("Device disconnected, exiting.");
 			exit(ENOENT);
-		} else if (!poll_fds[1].revents & POLLIN) {
+		} else if (!(poll_fds[STDIN_PFD].revents & POLLIN)) {
 			continue;
 		}
 
@@ -423,18 +423,18 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 		poll(poll_fds, poll_fds_count, -1);
 
 		/* Device disconnected */
-		if (poll_fds[0].revents & POLLHUP) {
+		if (poll_fds[UART_PFD].revents & POLLHUP) {
 			close_uart(-1);
 			MENU_ERROR("%s disconnected, exiting.", uart_conf->dev);
 			exit(ENOENT);
 
 		/* Data coming from UART */
-		} else if (!incoming_data && poll_fds[0].revents & POLLIN) {
+		} else if (!incoming_data && poll_fds[UART_PFD].revents & POLLIN) {
 			incoming_data = true;
 			MENU_EVENT("Data incoming from UART dev.");
 
 		/* Data coming from user */
-		} else if (poll_fds[1].revents & POLLIN) {
+		} else if (poll_fds[STDIN_PFD].revents & POLLIN) {
 			read(STDIN_FILENO, &c, 1);
 
 			switch (c) {

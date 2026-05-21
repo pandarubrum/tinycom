@@ -1,5 +1,6 @@
 #pragma once
 
+#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
 /* Macros for key strokes used in the menu */
 #define ENTER	0x0d
@@ -43,6 +44,12 @@
 	fprintf(stderr, "\033[31m" fmt ": invalid input\033[m\n", \
             ##__VA_ARGS__)
 
+
+/* Used to avoid magic-number inconsistencies */
+enum {
+	STDIN_PFD,
+	UART_PFD
+};
 
 /*
  * Prints usage:

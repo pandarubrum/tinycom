@@ -10,8 +10,6 @@
 #include "uart.h"
 #include "utils.h"
 
-#define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
-
 
 static struct termios oldt_stdin, newt_stdin, oldt_uart, newt_uart;
 

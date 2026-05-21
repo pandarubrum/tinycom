@@ -84,24 +84,24 @@ int main(int argc, char *argv[])
 
 	/* Monitor both UART device and stdin for incoming data */
 	struct pollfd poll_fds[] = {
-		{uart_fd, POLLIN, 0},
-		{STDIN_FILENO, POLLIN, 0}
+		[UART_PFD] = {uart_fd, POLLIN, 0},
+		[STDIN_PFD] = {STDIN_FILENO, POLLIN, 0}
 	};
 	char c = 0;
 	int rw_len = 0;
 
 	/* Manage communication between UART device and host */
 	while (true) {
-		poll(poll_fds, 2, -1);
+		poll(poll_fds, ARRAY_SIZE(poll_fds), -1);
 
 		/* Device disconnected */
-		if (poll_fds[0].revents & POLLHUP) {
+		if (poll_fds[UART_PFD].revents & POLLHUP) {
 			close_uart(-1);
 			MENU_ERROR("%s disconnected, exiting.", uart_conf.dev);
 			return ENOENT;
 
 		/* Data from device */
-		} else if (poll_fds[0].revents & POLLIN) {
+		} else if (poll_fds[UART_PFD].revents & POLLIN) {
 			rw_len = read(uart_fd, &c, 1);
 			if (rw_len < 0) {
 				MENU_ERROR("Reading from UART failed...");
@@ -111,7 +111,7 @@ int main(int argc, char *argv[])
 			fflush(stdout);
 
 		/* Data from user */
-		} else if (poll_fds[1].revents & POLLIN) {
+		} else if (poll_fds[STDIN_PFD].revents & POLLIN) {
 			rw_len = read(0, &c, 1);
 			if (rw_len < 0) {
 				MENU_ERROR("Reading from STDIN failed...");
@@ -119,7 +119,7 @@ int main(int argc, char *argv[])
 
 			/* CTRL + A opens menu */
 			if (c == MENU) {
-				int ret = menu(uart_fd, &uart_conf, poll_fds, 2);
+				int ret = menu(uart_fd, &uart_conf, poll_fds, ARRAY_SIZE(poll_fds));
 				if (ret < 0) {
 					close_uart(uart_fd);
 					MENU_MSG("Connection has been terminated, exiting.");
