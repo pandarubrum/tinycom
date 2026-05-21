@@ -80,7 +80,7 @@ int main(int argc, char *argv[])
 			"Connected to \033[4m%s\033[24m | %u %d%c%d | \033[22mExit: CTRL + A "
 			"\033[m\n", uart_conf.dev, uart_conf.baud, uart_conf.data_bits,
 			uart_conf.parity_bit, uart_conf.stop_bits);
-	TTY_READY();
+	TTY_READY;
 
 	/* Monitor both UART device and stdin for incoming data */
 	struct pollfd poll_fds[] = {

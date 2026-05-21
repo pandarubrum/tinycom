@@ -7,10 +7,118 @@
 #include <termios.h>
 #include <ctype.h>
 #include <poll.h>
+#include <fcntl.h>
 #include "uart.h"
 #include "UI.h"
 #include "utils.h"
 
+
+/* Paste ASCII file into UART TTY */
+static int menu_paste_file(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd)
+{
+	char c = '\0';
+	char file_path[PATH_MAX];
+	int i = 0;
+
+	MENU_TITLE("Paste file");
+	MENU_OPTS("Paste an ASCII file into the device's STDIN.\n\n"
+		  "Menu options:\n\tC-a|ESC\texit menu");
+	MENU_PROMPT("Specify the file path");
+
+	while (true) {
+
+		poll(poll_fds, poll_fds_count, -1);
+		if (poll_fds[0].revents & POLLHUP) {
+			close_uart(-1);
+			MENU_ERROR("Device disconnected, exiting.");
+			exit(ENOENT);
+		} else if (!poll_fds[1].revents & POLLIN) {
+			continue;
+		}
+
+		// build a path
+		read(STDIN_FILENO, &c, 1);
+		switch (c) {
+		case '\t':
+			continue;
+		case '\r':
+		case '\n':
+			if (i == 0) {
+				continue;
+			}
+			file_path[i] = '\0';
+			i = 0;
+			break;
+
+		case MENU:
+		case ESC:
+			TTY_READY;
+
+			return 0;
+		case '\b':
+		case DEL:
+			if (i == 0) {
+				continue;
+			}
+			fprintf(stderr, "\033[D\033[P");
+			if (i == PATH_MAX - 1) {
+				MENU_CLEAR_EVENT;
+			}
+			file_path[i] = '\0';
+			--i;
+			continue;
+		default:
+			if (i < PATH_MAX - 1) {
+				fprintf(stderr, "%c", c);
+				file_path[i] = c;
+				++i;
+			} else {
+				MENU_EVENT("Exceeded path length, last char ignored!");
+			}
+			continue;
+		}
+
+		int fd = open(file_path, O_RDONLY);
+		if (fd < 0) {
+			MENU_ERROR("Error opening file.");
+			perror(__func__);
+			MENU_PROMPT("Specify the file path");
+			continue;
+		}
+
+		int len = -1;
+		char buf[1024];
+
+		MENU_MSG("Pasting file into UART TTY...");
+		while (true) {
+
+			len = read(fd, buf, sizeof(buf));
+			// EOF
+			if (len == 0) {
+				break;
+			}
+			// Error reading file
+			if (len < 0) {
+				MENU_ERROR("Error reading file.");
+				perror(__func__);
+				return 0;
+			}
+
+			len = write(uart_fd, buf, len);
+			// Error writing file
+			if (len <= 0 && errno != 0) {
+				MENU_ERROR("Error pasting file.");
+				perror(__func__);
+				return 0;
+			}
+		}
+
+		close(fd);
+		MENU_MSG("File \"%s\" pasted successfully.", file_path);
+		TTY_READY;
+		return 0;
+	}
+}
 
 /* Set baud in the interactive menu, poll() checks if dev was disconnected */
 static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd, unsigned *baud)
@@ -72,7 +180,7 @@ static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd
 			/* fallthrough */
 		case MENU:
 		case ESC:
-			TTY_READY();
+			TTY_READY;
 
 			return 0;
 		case 'q':
@@ -146,7 +254,7 @@ static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 			/* fallthrough */
 		case MENU:
 		case ESC:
-			TTY_READY();
+			TTY_READY;
 			return 0;
 		case 'q':
 			return -1;
@@ -216,7 +324,7 @@ static int menu_parity_bit(struct pollfd *poll_fds, nfds_t poll_fds_count,
 			/* fallthrough */
 		case MENU:
 		case ESC:
-			TTY_READY();
+			TTY_READY;
 			return 0;
 		case 'q':
 			return -1;
@@ -276,7 +384,7 @@ static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 			/* fallthrough */
 		case MENU:
 		case ESC:
-			TTY_READY();
+			TTY_READY;
 			return 0;
 		case 'q':
 			return -1;
@@ -303,6 +411,7 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 			"\td\tset data bits\n"
 			"\tp\tset parity bit\n"
 			"\ts\tset stop bits\n"
+			"\tv\tpaste an ASCII file\n"
 			"\tC-a|ESC\texit menu\n"
 			"\tq\tquit",
 			uart_conf->dev, uart_conf->baud, uart_conf->data_bits,
@@ -322,8 +431,7 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 		/* Data coming from UART */
 		} else if (!incoming_data && poll_fds[0].revents & POLLIN) {
 			incoming_data = true;
-			MENU_WARN("\033[2AData incoming from UART dev.");
-			MENU_PROMPT("Enter your choice");
+			MENU_EVENT("Data incoming from UART dev.");
 
 		/* Data coming from user */
 		} else if (poll_fds[1].revents & POLLIN) {
@@ -338,8 +446,10 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 				continue;
 			case MENU:
 			case ESC:
-				TTY_READY();
+				TTY_READY;
 				return 0;
+			case 'v':
+				return menu_paste_file(poll_fds, poll_fds_count, uart_fd);
 			case 'q':
 				return -1;
 			case 'b':

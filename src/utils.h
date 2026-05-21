@@ -5,10 +5,10 @@
 #define ENTER	0x0d
 #define ESC	0x1b
 #define MENU	0x01
+#define DEL	0x7f
 
 /* List of macros for printing info, warning, error msgs or menu TUI */
-#define TTY_READY() \
-	fprintf(stderr, "\n\n\033[1;32;7m Terminal is ready \033[m\n\n")
+#define TTY_READY fprintf(stderr, "\n\n\033[1;32;7m Terminal is ready \033[m\n\n")
 
 #define MENU_TITLE(fmt) \
 	fprintf(stderr, "\n\n\033[1m........................................\033[m\n" \
@@ -32,6 +32,12 @@
 #define MENU_ERROR(fmt, ...) \
 	fprintf(stderr, "\n\033[31m" fmt "\033[m\n", \
             ##__VA_ARGS__)
+
+#define MENU_EVENT(fmt, ...) \
+	fprintf(stderr, "\033[s\033[1A\033[G\033[2K\033[33m" fmt "\033[m\033[u", \
+            ##__VA_ARGS__)
+
+#define MENU_CLEAR_EVENT fprintf(stderr, "\033[s\033[1A\033[2K\033[u")
 
 #define INVAL_INPUT(fmt, ...) \
 	fprintf(stderr, "\033[31m" fmt ": invalid input\033[m\n", \
