@@ -9,9 +9,8 @@ void print_usage(const char *prog)
 {
 	printf("Usage: %s [-b baud] [-d data_bits] [-p parity] [-s stop_bits] [device]\n\n"
 	       "Example: %s -b 115200 -d 8 -p N -s 1 /dev/ttyUSB0\n\nAll flags are completely "
-	       "optional and if no argument is not specified,\nan attempt at automatically "
-	       "finding a device will be made, and the\ndefault configuration \033[2m115201 8N1"
-	       "\033[m will be loaded.\n", prog, prog);
+	       "optional. Running tinycom without any argument defaults to: 115200 8N1 "
+	       "/dev/tty(USB|ACM)*\n", prog, prog);
 }
 
 /* Convert a str into an unsigned int */
