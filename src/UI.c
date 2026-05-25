@@ -8,25 +8,89 @@
 #include <ctype.h>
 #include <poll.h>
 #include <fcntl.h>
+#include <string.h>
 #include "uart.h"
 #include "UI.h"
 #include "utils.h"
 
+
+static void control_seq(char *file_path, unsigned *cur_pos, unsigned *last_idx)
+{
+	char buf[8];
+	read(STDIN_FILENO, buf, sizeof(buf));
+
+	// return if it's not an escape sequence
+	if (buf[0] != '[') {
+		return;
+	}
+
+	switch (buf[1]) {
+	case 'C': // move cursor to the right
+		if (*cur_pos < *last_idx) {
+			fprintf(stderr, "\033[C");
+			++*cur_pos;
+		} else {
+			// end of text reached
+			fprintf(stderr, "\a");
+		}
+		break;
+
+	case 'D': // move cursor to the left
+		if (*cur_pos > 0) {
+			fprintf(stderr, "\033[D");
+			--*cur_pos;
+		} else {
+			// beginning of text reached
+			fprintf(stderr, "\a");
+		}
+		break;
+
+	case 'H': // move cursor to the start of the line
+		if (*cur_pos > 0) {
+			fprintf(stderr, "\033[%dD", *cur_pos);
+			*cur_pos = 0;
+		}
+		break;
+
+	case 'F': // move cursor to the end of the line
+		if (*cur_pos < *last_idx) {
+			fprintf(stderr, "\033[%dC", *last_idx - *cur_pos);
+			*cur_pos = *last_idx;
+		}
+		break;
+
+	case '3': // could be <DEL> key
+		if (buf[2] == '~') {
+			if (*cur_pos < *last_idx) {
+				memmove(&file_path[*cur_pos], &file_path[*cur_pos + 1],
+					*last_idx - *cur_pos);
+				--*last_idx;
+				file_path[*last_idx] = '\0';
+				fprintf(stderr, "\033[s\033[K%s\033[u", file_path + *cur_pos);
+			} else {
+				// end of text reached
+				fprintf(stderr, "\a");
+			}
+		}
+		break;
+	}
+}
 
 /* Paste ASCII file into UART TTY */
 static int menu_paste_file(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd)
 {
 	char c = '\0';
 	char file_path[PATH_MAX];
-	int i = 0;
+	unsigned last_idx = 0;
+	unsigned cur_pos = 0;
+	int fd = -1;
 
 	MENU_TITLE("Paste file");
 	MENU_OPTS("Paste an ASCII file into the device's STDIN.\n\n"
 		  "Menu options:\n\tC-a|ESC\texit menu");
 	MENU_PROMPT("Specify the file path");
 
-	while (true) {
-
+	do {
 		poll(poll_fds, poll_fds_count, -1);
 		if (poll_fds[UART_PFD].revents & POLLHUP) {
 			close_uart(-1);
@@ -39,85 +103,122 @@ static int menu_paste_file(struct pollfd *poll_fds, nfds_t poll_fds_count, int u
 		// build a path
 		read(STDIN_FILENO, &c, 1);
 		switch (c) {
-		case '\t':
-			continue;
 		case '\r':
 		case '\n':
-			if (i == 0) {
+			if (last_idx == 0) {
+				fprintf(stderr, "\a");
 				continue;
 			}
-			file_path[i] = '\0';
-			i = 0;
+			file_path[last_idx] = '\0';
+			last_idx = 0;
+			cur_pos = 0;
 			break;
 
-		case MENU:
 		case ESC:
+			poll(poll_fds, poll_fds_count, 0);
+			if (poll_fds[STDIN_PFD].revents & POLLIN) {
+				control_seq(file_path, &cur_pos, &last_idx);
+				continue;
+			}
+			/* fallthrough */
+		case MENU:
 			TTY_READY;
 
 			return 0;
+
+		// backspace
 		case '\b':
 		case DEL:
-			if (i == 0) {
+			if (cur_pos == 0) {
+				fprintf(stderr, "\a");
 				continue;
 			}
-			fprintf(stderr, "\033[D\033[P");
-			if (i == PATH_MAX - 1) {
+
+			if (last_idx == PATH_MAX - 1) {
 				MENU_CLEAR_EVENT;
 			}
-			file_path[i] = '\0';
-			--i;
-			continue;
-		default:
-			if (i < PATH_MAX - 1) {
-				fprintf(stderr, "%c", c);
-				file_path[i] = c;
-				++i;
+
+			if (cur_pos < last_idx) {
+				memmove(&file_path[cur_pos - 1], &file_path[cur_pos],
+					last_idx - cur_pos + 1);
+
+				file_path[last_idx - 1] = '\0';
+				fprintf(stderr, "\033[s\033[D\033[K%s\033[%uD",
+					file_path + cur_pos - 1, last_idx - cur_pos);
 			} else {
-				MENU_EVENT("Exceeded path length, last char ignored!");
+				fprintf(stderr, "\033[D\033[P");
 			}
+			--last_idx;
+			--cur_pos;
+			continue;
+
+		default:
+			// discard non-printable chars
+			if (c < ' ' || c > '~') {
+				fprintf(stderr, "\a");
+				continue;
+			}
+
+			if (last_idx >= PATH_MAX - 1) {
+				MENU_EVENT("Exceeded max path length, last character ignored!");
+				continue;
+			}
+
+			if (cur_pos < last_idx) {
+				memmove(&file_path[cur_pos + 1], &file_path[cur_pos],
+					last_idx - cur_pos + 1);
+				file_path[cur_pos] = c;
+				file_path[last_idx + 1] = '\0';
+				fprintf(stderr, "\033[s\033[K%s\033[u\033[C", file_path + cur_pos);
+			} else {
+				file_path[last_idx] = c;
+				fprintf(stderr, "%c", c);
+			}
+			++last_idx;
+			++cur_pos;
+
 			continue;
 		}
 
-		int fd = open(file_path, O_RDONLY);
+		fd = open(file_path, O_RDONLY);
 		if (fd < 0) {
-			MENU_ERROR("Error opening file.");
+			MENU_ERROR("Error opening file \"%s\"", file_path);
 			perror(__func__);
 			MENU_PROMPT("Specify the file path");
-			continue;
+		}
+	} while (fd < 0);
+
+	int len = -1;
+	char buf[1024];
+
+	MENU_MSG("Pasting file into UART TTY...");
+	while (true) {
+
+		len = read(fd, buf, sizeof(buf));
+		// EOF
+		if (len == 0) {
+			MENU_MSG("File \"%s\" pasted successfully.", file_path);
+			break;
+		}
+		// Error reading file
+		if (len < 0) {
+			MENU_ERROR("Error reading file.");
+			perror(__func__);
+			break;
 		}
 
-		int len = -1;
-		char buf[1024];
-
-		MENU_MSG("Pasting file into UART TTY...");
-		while (true) {
-
-			len = read(fd, buf, sizeof(buf));
-			// EOF
-			if (len == 0) {
-				break;
-			}
-			// Error reading file
-			if (len < 0) {
-				MENU_ERROR("Error reading file.");
-				perror(__func__);
-				return 0;
-			}
-
-			len = write(uart_fd, buf, len);
-			// Error writing file
-			if (len <= 0 && errno != 0) {
-				MENU_ERROR("Error pasting file.");
-				perror(__func__);
-				return 0;
-			}
+		len = write(uart_fd, buf, len);
+		// Error writing file
+		if (len <= 0 && errno != 0) {
+			MENU_ERROR("Error pasting file.");
+			perror(__func__);
+			break;
 		}
-
-		close(fd);
-		MENU_MSG("File \"%s\" pasted successfully.", file_path);
-		TTY_READY;
-		return 0;
 	}
+
+	TTY_READY;
+	close(fd);
+	return 0;
 }
 
 /* Set baud in the interactive menu, poll() checks if dev was disconnected */
@@ -125,8 +226,9 @@ static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd
 {
 	char c = '\0';
 	int ret = -1;
-	char buf[100] = {0};
-	int i = 0;
+	char buf[11] = {0};
+	unsigned last_idx = 0;
+	unsigned cur_pos = 0;
 
 	MENU_TITLE("Baud selection");
 	MENU_OPTS("Valid values: 0 - %u\n"
@@ -149,17 +251,38 @@ static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd
 		read(STDIN_FILENO, &c, 1);
 		switch (c) {
 		default:
-			fprintf(stderr, "%c", c);
-			buf[i] = c;
-			i++;
+			// discard non-printable chars
+			if (c < ' ' || c > '~') {
+				fprintf(stderr, "\a");
+				continue;
+			}
+
+			if (last_idx >= sizeof(buf) - 1) {
+				MENU_EVENT("Too many digits, last digit ignored!");
+				continue;
+			}
+
+			if (cur_pos < last_idx) {
+				memmove(&buf[cur_pos + 1], &buf[cur_pos], last_idx - cur_pos + 1);
+				buf[cur_pos] = c;
+				buf[last_idx + 1] = '\0';
+				fprintf(stderr, "\033[s\033[K%s\033[u\033[C", buf + cur_pos);
+			} else {
+				buf[last_idx] = c;
+				fprintf(stderr, "%c", c);
+			}
+			++last_idx;
+			++cur_pos;
+
 			break;
 		case '\n':
 		case '\r':
-			if (i == 0) {
+			if (last_idx == 0) {
 				continue;
 			}
-			buf[i] = '\0';
-			i = 0;
+			buf[last_idx] = '\0';
+			last_idx = 0;
+			cur_pos = 0;
 
 			unsigned u = strtouint(buf);
 			if (errno != 0) {
@@ -177,12 +300,46 @@ static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd
 
 			*baud = u;
 			MENU_MSG("Baud was set to %u.", u);
+			TTY_READY;
+			return 0;
+
+		case ESC:
+			poll(poll_fds, poll_fds_count, 0);
+			if (poll_fds[STDIN_PFD].revents & POLLIN) {
+				control_seq(buf, &cur_pos, &last_idx);
+				continue;
+			}
 			/* fallthrough */
 		case MENU:
-		case ESC:
 			TTY_READY;
 
 			return 0;
+
+		// backspace
+		case '\b':
+		case DEL:
+			if (cur_pos == 0) {
+				fprintf(stderr, "\a");
+				continue;
+			}
+
+			if (last_idx == sizeof(buf) - 1) {
+				MENU_CLEAR_EVENT;
+			}
+
+			if (cur_pos < last_idx) {
+				memmove(&buf[cur_pos - 1], &buf[cur_pos], last_idx - cur_pos + 1);
+
+				buf[last_idx - 1] = '\0';
+				fprintf(stderr, "\033[s\033[D\033[K%s\033[%uD",
+					buf + cur_pos - 1, last_idx - cur_pos);
+			} else {
+				fprintf(stderr, "\033[D\033[P");
+			}
+			--last_idx;
+			--cur_pos;
+			continue;
+
 		case 'q':
 
 			return -1;

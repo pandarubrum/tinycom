@@ -10,7 +10,7 @@ struct uart_conf_t {
 	unsigned int data_bits;	/* data bits, 5, 6, 7 or 8 */
 	char parity_bit;	/* parity bit: N (none), E (even), O (odd), M (mark), S (space) */
 	unsigned int stop_bits;	/* stop bits: 1 or 2 */
-	int fd;			/* ttyUSB file desc */
+	int fd;			/* UART device file desc */
 };
 
 /*
