@@ -290,9 +290,9 @@ int set_stop_bits(int uart_fd, unsigned *stop_bits, bool set_now)
  *
  * Returns -1 on failure if the setup failed in setting the new values or applying them.
  */
-static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
+static int setup_uart(struct uart_conf_t *uart_conf)
 {
-	tcgetattr(uart_fd, &oldt_uart);
+	tcgetattr(uart_conf->fd, &oldt_uart);
 	newt_uart = oldt_uart;
 
 	newt_uart.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP
@@ -303,28 +303,27 @@ static int setup_uart(int uart_fd, struct uart_conf_t *uart_conf)
 	newt_uart.c_cc[VMIN] = 1;
 	newt_uart.c_cc[VTIME] = 0;
 
-	set_baud(uart_fd, &uart_conf->baud, false);
+	set_baud(uart_conf->fd, &uart_conf->baud, false);
 
-	int ret = set_data_bits(uart_fd, &uart_conf->data_bits, false);
+	int ret = set_data_bits(uart_conf->fd, &uart_conf->data_bits, false);
 	if (ret < 0) {
 		return -1;
 	}
-	ret = set_parity_bit(uart_fd, &uart_conf->parity_bit, false);
+	ret = set_parity_bit(uart_conf->fd, &uart_conf->parity_bit, false);
 	if (ret < 0) {
 		return -1;
 	}
-	ret = set_stop_bits(uart_fd, &uart_conf->stop_bits, false);
+	ret = set_stop_bits(uart_conf->fd, &uart_conf->stop_bits, false);
 	if (ret < 0) {
 		return -1;
 	}
 
-	ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
-	if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
+	ret = tcsetattr(uart_conf->fd, TCSANOW, &newt_uart);
+	if (ret < 0 || !verify_tcsetattr(uart_conf->fd, &newt_uart)) {
 		MENU_ERROR("Failed to setup UART TTY");
-		close_uart(uart_fd);
 		return -1;
 	}
-	tcflush(uart_fd, TCIOFLUSH);
+	tcflush(uart_conf->fd, TCIOFLUSH);
 
 	return 0;
 }
@@ -364,40 +363,43 @@ int init_uart(struct uart_conf_t *uart_conf)
 		return -1;
 	}
 
-	int uart_fd = open_dev(&uart_conf->dev);
-	if (uart_fd < 0) {
+	uart_conf->fd = open_dev(&uart_conf->dev);
+	if (uart_conf->fd < 0) {
 		perror(__func__);
 		return -1;
 	}
 
-	int ret = setup_uart(uart_fd, uart_conf);
+	int ret = setup_uart(uart_conf);
 	if (ret < 0) {
 		perror(__func__);
+		close_uart(uart_conf->fd);
 		return -1;
 	}
 
 	ret = setup_stdin();
 	if (ret < 0) {
 		perror(__func__);
+		close_uart(uart_conf->fd);
 		return -1;
 	}
 
-	return uart_fd;
+	return uart_conf->fd;
 }
 
 /* If needed, restore original TTY settings for stdin and UART, and close UART device */
 void close_uart(int uart_fd)
 {
 	/* if UART dev was open restore termios settings, verify and close fd */
-	if (uart_fd >= 0 && memcmp(&oldt_uart, &newt_uart, (sizeof(struct termios))) != 0) {
-		int ret = tcsetattr(uart_fd, TCSANOW, &oldt_uart);
-		if (ret < 0 || !verify_tcsetattr(uart_fd, &oldt_uart)) {
-			MENU_ERROR("Error restoring UART settings.");
-			return;
+	if (uart_fd >= 0) {
+		if (memcmp(&oldt_uart, &newt_uart, (sizeof(struct termios))) != 0) {
+			int ret = tcsetattr(uart_fd, TCSANOW, &oldt_uart);
+			if (ret < 0 || !verify_tcsetattr(uart_fd, &oldt_uart)) {
+				MENU_ERROR("Error restoring UART settings.");
+			} else {
+				tcflush(uart_fd, TCIOFLUSH);
+				MENU_MSG("UART settings were restored.");
+			}
 		}
-		tcflush(uart_fd, TCIOFLUSH);
-
-		MENU_MSG("UART settings were restored.");
 		close(uart_fd);
 	}
 
@@ -406,9 +408,8 @@ void close_uart(int uart_fd)
 		int ret = tcsetattr(STDIN_FILENO, TCSADRAIN, &oldt_stdin);
 		if (ret < 0 || !verify_tcsetattr(STDIN_FILENO, &oldt_stdin)) {
 			MENU_ERROR("Error restoring terminal settings.");
-			return;
+		} else {
+			MENU_MSG("Terminal settings were restored.");
 		}
-
-		MENU_MSG("Terminal settings were restored.");
 	}
 }

@@ -411,7 +411,7 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 			"\td\tset data bits\n"
 			"\tp\tset parity bit\n"
 			"\ts\tset stop bits\n"
-			"\tv\tpaste an ASCII file\n"
+			"\tv\tpaste an ASCII file\n\n"
 			"\tC-a|ESC\texit menu\n"
 			"\tq\tquit",
 			uart_conf->dev, uart_conf->baud, uart_conf->data_bits,

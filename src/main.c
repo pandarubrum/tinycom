@@ -72,7 +72,6 @@ int main(int argc, char *argv[])
 	/* Initialize UART device and report on failure */
 	int uart_fd = init_uart(&uart_conf);
 	if (uart_fd == -1) {
-		close_uart(uart_fd);
 		return EXIT_FAILURE;
 	}
 
@@ -107,7 +106,7 @@ int main(int argc, char *argv[])
 				MENU_ERROR("Reading from UART failed...");
 			}
 
-			printf("%c", c);
+			putchar(c);
 			fflush(stdout);
 
 		/* Data from user */
@@ -123,7 +122,7 @@ int main(int argc, char *argv[])
 				if (ret < 0) {
 					close_uart(uart_fd);
 					MENU_MSG("Connection has been terminated, exiting.");
-					exit(EXIT_SUCCESS);
+					return EXIT_SUCCESS;
 				}
 
 			} else {
