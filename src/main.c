@@ -70,24 +70,21 @@ int main(int argc, char *argv[])
 	}
 
 	/* Initialize UART device and report on failure */
-	int uart_fd = init_uart(&uart_conf);
-	if (uart_fd == -1) {
+	int ret = init_uart(&uart_conf);
+	if (ret == -1) {
 		return EXIT_FAILURE;
 	}
 
-	fprintf(stderr, "\033[2J\033[H\033[1;7m "
-			"Connected to \033[4m%s\033[24m | %u %d%c%d | \033[22mMenu: CTRL + A "
-			"\033[m\n", uart_conf.dev, uart_conf.baud, uart_conf.data_bits,
-			uart_conf.parity_bit, uart_conf.stop_bits);
-	TTY_READY;
+	// status bar
+	init_ui(&uart_conf);
 
 	/* Monitor both UART device and stdin for incoming data */
 	struct pollfd poll_fds[] = {
-		[UART_PFD] = {uart_fd, POLLIN, 0},
+		[UART_PFD] = {uart_conf.fd, POLLIN, 0},
 		[STDIN_PFD] = {STDIN_FILENO, POLLIN, 0}
 	};
-	char c = 0;
-	int rw_len = 0;
+	char buf[4096];
+	ssize_t rw_len = 0;
 
 	/* Manage communication between UART device and host */
 	while (true) {
@@ -97,36 +94,37 @@ int main(int argc, char *argv[])
 		if (poll_fds[UART_PFD].revents & POLLHUP) {
 			close_uart(-1);
 			MENU_ERROR("%s disconnected, exiting.", uart_conf.dev);
+			close_ui();
 			return ENOENT;
 
 		/* Data from device */
 		} else if (poll_fds[UART_PFD].revents & POLLIN) {
-			rw_len = read(uart_fd, &c, 1);
+			rw_len = read(uart_conf.fd, buf, sizeof(buf));
 			if (rw_len < 0) {
 				MENU_ERROR("Reading from UART failed...");
 			}
 
-			putchar(c);
-			fflush(stdout);
+			printfUI(&uart_conf, buf, rw_len);
 
 		/* Data from user */
 		} else if (poll_fds[STDIN_PFD].revents & POLLIN) {
-			rw_len = read(0, &c, 1);
+			rw_len = read(STDIN_FILENO, buf, sizeof(buf));
 			if (rw_len < 0) {
 				MENU_ERROR("Reading from STDIN failed...");
 			}
 
 			/* CTRL + A opens menu */
-			if (c == MENU) {
-				int ret = menu(uart_fd, &uart_conf, poll_fds, ARRAY_SIZE(poll_fds));
+			if (rw_len == 1 && buf[0] == MENU) {
+				ret = menu(&uart_conf, poll_fds, ARRAY_SIZE(poll_fds));
 				if (ret < 0) {
-					close_uart(uart_fd);
+					close_uart(uart_conf.fd);
 					MENU_MSG("Connection has been terminated, exiting.");
+					close_ui();
 					return EXIT_SUCCESS;
 				}
 
 			} else {
-				rw_len = write(uart_fd, &c, 1);
+				rw_len = write(uart_conf.fd, buf, rw_len);
 				if (rw_len < 0) {
 					MENU_ERROR("Writing to UART failed...");
 				}

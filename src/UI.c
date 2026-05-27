@@ -5,6 +5,7 @@
 #include <stdlib.h>
 #include <unistd.h>
 #include <termios.h>
+#include <sys/ioctl.h>
 #include <ctype.h>
 #include <poll.h>
 #include <fcntl.h>
@@ -14,24 +15,34 @@
 #include "utils.h"
 
 
-static void control_seq(char *file_path, unsigned *cur_pos, unsigned *last_idx)
+static void status_bar(struct uart_conf_t *uart_conf, char *event_msg)
 {
-	char buf[8];
-	read(STDIN_FILENO, buf, sizeof(buf));
+	char empty_event[1] = {'\0'};
+	if (event_msg == NULL)
+		event_msg = empty_event;
 
+	fprintf(stderr, "\033[s\033[%dH\033[2K\033[1;7m %s \033[32m %u %d%c%d \033[m "
+			"\033[32mMenu: C-a\033[m \033[33m%s\033[m\033[u", USHRT_MAX,
+			uart_conf->dev, uart_conf->baud, uart_conf->data_bits,
+			uart_conf->parity_bit, uart_conf->stop_bits, event_msg);
+}
+
+static int control_seq(char *final_str, char *ctrl_seq, ssize_t len,
+		       unsigned *cur_pos, unsigned *last_idx)
+{
 	// return if it's not an escape sequence
-	if (buf[0] != '[') {
-		return;
+	if (len < 3 || ctrl_seq[0] != ESC || ctrl_seq[1] != '[') {
+		return -1;
 	}
 
-	switch (buf[1]) {
+	switch (ctrl_seq[2]) {
 	case 'C': // move cursor to the right
 		if (*cur_pos < *last_idx) {
 			fprintf(stderr, "\033[C");
 			++*cur_pos;
 		} else {
 			// end of text reached
-			fprintf(stderr, "\a");
+			putc('\a', stderr);
 		}
 		break;
 
@@ -41,7 +52,7 @@ static void control_seq(char *file_path, unsigned *cur_pos, unsigned *last_idx)
 			--*cur_pos;
 		} else {
 			// beginning of text reached
-			fprintf(stderr, "\a");
+			putc('\a', stderr);
 		}
 		break;
 
@@ -60,27 +71,34 @@ static void control_seq(char *file_path, unsigned *cur_pos, unsigned *last_idx)
 		break;
 
 	case '3': // could be <DEL> key
-		if (buf[2] == '~') {
-			if (*cur_pos < *last_idx) {
-				memmove(&file_path[*cur_pos], &file_path[*cur_pos + 1],
-					*last_idx - *cur_pos);
-				--*last_idx;
-				file_path[*last_idx] = '\0';
-				fprintf(stderr, "\033[s\033[K%s\033[u", file_path + *cur_pos);
-			} else {
-				// end of text reached
-				fprintf(stderr, "\a");
-			}
+		if (len < 4 || ctrl_seq[3] != '~') {
+			return -1;
+		}
+
+		if (*cur_pos < *last_idx) {
+			memmove(&final_str[*cur_pos], &final_str[*cur_pos + 1],
+				*last_idx - *cur_pos);
+			--*last_idx;
+			final_str[*last_idx] = '\0';
+			fprintf(stderr, "\033[s\033[K%s\033[u", final_str + *cur_pos);
+		} else {
+			// end of text reached
+			putc('\a', stderr);
 		}
 		break;
+	default:
+		return -1;
 	}
+	return 0;
 }
 
 /* Paste ASCII file into UART TTY */
-static int menu_paste_file(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd)
+static int menu_paste_file(struct pollfd *poll_fds, nfds_t poll_fds_count,
+			   struct uart_conf_t *uart_conf)
 {
-	char c = '\0';
+	char buf[PATH_MAX];
 	char file_path[PATH_MAX];
+	ssize_t len = -1;
 	unsigned last_idx = 0;
 	unsigned cur_pos = 0;
 	int fd = -1;
@@ -93,103 +111,111 @@ static int menu_paste_file(struct pollfd *poll_fds, nfds_t poll_fds_count, int u
 	do {
 		poll(poll_fds, poll_fds_count, -1);
 		if (poll_fds[UART_PFD].revents & POLLHUP) {
-			close_uart(-1);
-			MENU_ERROR("Device disconnected, exiting.");
-			exit(ENOENT);
+			uart_conf->fd = -1;
+			MENU_ERROR("%s disconnected.", uart_conf->dev);
+			return -1;
 		} else if (!(poll_fds[STDIN_PFD].revents & POLLIN)) {
 			continue;
 		}
 
 		// build a path
-		read(STDIN_FILENO, &c, 1);
-		switch (c) {
-		case '\r':
-		case '\n':
-			if (last_idx == 0) {
-				fprintf(stderr, "\a");
-				continue;
-			}
-			file_path[last_idx] = '\0';
-			last_idx = 0;
-			cur_pos = 0;
-			break;
-
-		case ESC:
-			poll(poll_fds, poll_fds_count, 0);
-			if (poll_fds[STDIN_PFD].revents & POLLIN) {
-				control_seq(file_path, &cur_pos, &last_idx);
-				continue;
-			}
-			/* fallthrough */
-		case MENU:
-			TTY_READY;
-
-			return 0;
-
-		// backspace
-		case '\b':
-		case DEL:
-			if (cur_pos == 0) {
-				fprintf(stderr, "\a");
-				continue;
-			}
-
-			if (last_idx == PATH_MAX - 1) {
-				MENU_CLEAR_EVENT;
-			}
-
-			if (cur_pos < last_idx) {
-				memmove(&file_path[cur_pos - 1], &file_path[cur_pos],
-					last_idx - cur_pos + 1);
-
-				file_path[last_idx - 1] = '\0';
-				fprintf(stderr, "\033[s\033[D\033[K%s\033[%uD",
-					file_path + cur_pos - 1, last_idx - cur_pos);
-			} else {
-				fprintf(stderr, "\033[D\033[P");
-			}
-			--last_idx;
-			--cur_pos;
+		len = read(STDIN_FILENO, buf, sizeof(buf));
+		if (len < 0) {
+			MENU_ERROR("Reading from STDIN failed...");
 			continue;
-
-		default:
-			// discard non-printable chars
-			if (c < ' ' || c > '~') {
-				fprintf(stderr, "\a");
+		} else if (len > 1) {
+			unsigned old_idx = last_idx;
+			int ret = control_seq(file_path, buf, len, &cur_pos, &last_idx);
+			if (ret == 0) {
+				if (old_idx > last_idx) {
+					status_bar(uart_conf, NULL);
+				}
 				continue;
 			}
-
-			if (last_idx >= PATH_MAX - 1) {
-				MENU_EVENT("Exceeded max path length, last character ignored!");
-				continue;
-			}
-
-			if (cur_pos < last_idx) {
-				memmove(&file_path[cur_pos + 1], &file_path[cur_pos],
-					last_idx - cur_pos + 1);
-				file_path[cur_pos] = c;
-				file_path[last_idx + 1] = '\0';
-				fprintf(stderr, "\033[s\033[K%s\033[u\033[C", file_path + cur_pos);
-			} else {
-				file_path[last_idx] = c;
-				fprintf(stderr, "%c", c);
-			}
-			++last_idx;
-			++cur_pos;
-
-			continue;
 		}
 
-		fd = open(file_path, O_RDONLY);
-		if (fd < 0) {
+		for (ssize_t i = 0; i < len; ++i) {
+			switch (buf[i]) {
+			case '\r':
+			case '\n':
+				if (last_idx == 0) {
+					putc('\a', stderr);
+					continue;
+				}
+				file_path[last_idx] = '\0';
+				last_idx = 0;
+				cur_pos = 0;
+				break;
+
+			case ESC:
+			case MENU:
+				status_bar(uart_conf, NULL);
+				TTY_READY;
+				return 0;
+
+			// backspace
+			case '\b':
+			case DEL:
+				if (cur_pos == 0) {
+					putc('\a', stderr);
+					continue;
+				}
+
+				if (last_idx == PATH_MAX - 1) {
+					status_bar(uart_conf, NULL);
+				}
+
+				if (cur_pos < last_idx) {
+					memmove(&file_path[cur_pos - 1], &file_path[cur_pos],
+						last_idx - cur_pos + 1);
+
+					file_path[last_idx - 1] = '\0';
+					fprintf(stderr, "\033[s\033[D\033[K%s\033[%uD",
+						file_path + cur_pos - 1, last_idx - cur_pos);
+				} else {
+					fprintf(stderr, "\033[D\033[P");
+				}
+				--last_idx;
+				--cur_pos;
+				continue;
+
+			default:
+				// discard non-printable chars
+				if (buf[i] < ' ' || buf[i] > '~') {
+					putc('\a', stderr);
+					continue;
+				}
+
+				if (last_idx >= PATH_MAX - 1) {
+					status_bar(uart_conf, "Exceeded max path length, last character ignored!");
+					continue;
+				}
+
+				if (cur_pos < last_idx) {
+					memmove(&file_path[cur_pos + 1], &file_path[cur_pos],
+						last_idx - cur_pos + 1);
+					file_path[cur_pos] = buf[i];
+					file_path[last_idx + 1] = '\0';
+					fprintf(stderr, "\033[s\033[K%s\033[u\033[C", file_path + cur_pos);
+				} else {
+					file_path[last_idx] = buf[i];
+					fprintf(stderr, "%c", buf[i]);
+				}
+				++last_idx;
+				++cur_pos;
+
+				continue;
+			}
+
+			fd = open(file_path, O_RDONLY);
+			if (fd >= 0) {
+				break;
+			}
 			MENU_ERROR("Error opening file \"%s\"", file_path);
 			perror(__func__);
 			MENU_PROMPT("Specify the file path");
 		}
 	} while (fd < 0);
-
-	int len = -1;
-	char buf[1024];
 
 	MENU_MSG("Pasting file into UART TTY...");
 	while (true) {
@@ -207,7 +233,7 @@ static int menu_paste_file(struct pollfd *poll_fds, nfds_t poll_fds_count, int u
 			break;
 		}
 
-		len = write(uart_fd, buf, len);
+		len = write(uart_conf->fd, buf, len);
 		// Error writing file
 		if (len <= 0 && errno != 0) {
 			MENU_ERROR("Error pasting file.");
@@ -218,15 +244,16 @@ static int menu_paste_file(struct pollfd *poll_fds, nfds_t poll_fds_count, int u
 
 	TTY_READY;
 	close(fd);
+	status_bar(uart_conf, NULL);
 	return 0;
 }
 
 /* Set baud in the interactive menu, poll() checks if dev was disconnected */
-static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd, unsigned *baud)
+static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, struct uart_conf_t *uart_conf)
 {
-	char c = '\0';
 	int ret = -1;
-	char buf[11] = {0};
+	char temp_buf[1024];
+	char final_buf[11] = {0};
 	unsigned last_idx = 0;
 	unsigned cur_pos = 0;
 
@@ -241,115 +268,126 @@ static int menu_baud(struct pollfd *poll_fds, nfds_t poll_fds_count, int uart_fd
 
 		poll(poll_fds, poll_fds_count, -1);
 		if (poll_fds[UART_PFD].revents & POLLHUP) {
-			close_uart(-1);
-			MENU_ERROR("Device disconnected, exiting.");
-			exit(ENOENT);
+			uart_conf->fd = -1;
+			MENU_ERROR("%s disconnected.", uart_conf->dev);
+			return -1;
 		} else if (!(poll_fds[STDIN_PFD].revents & POLLIN)) {
 			continue;
 		}
 
-		read(STDIN_FILENO, &c, 1);
-		switch (c) {
-		default:
-			// discard non-printable chars
-			if (c < ' ' || c > '~') {
-				fprintf(stderr, "\a");
-				continue;
-			}
-
-			if (last_idx >= sizeof(buf) - 1) {
-				MENU_EVENT("Too many digits, last digit ignored!");
-				continue;
-			}
-
-			if (cur_pos < last_idx) {
-				memmove(&buf[cur_pos + 1], &buf[cur_pos], last_idx - cur_pos + 1);
-				buf[cur_pos] = c;
-				buf[last_idx + 1] = '\0';
-				fprintf(stderr, "\033[s\033[K%s\033[u\033[C", buf + cur_pos);
-			} else {
-				buf[last_idx] = c;
-				fprintf(stderr, "%c", c);
-			}
-			++last_idx;
-			++cur_pos;
-
-			break;
-		case '\n':
-		case '\r':
-			if (last_idx == 0) {
-				continue;
-			}
-			buf[last_idx] = '\0';
-			last_idx = 0;
-			cur_pos = 0;
-
-			unsigned u = strtouint(buf);
-			if (errno != 0) {
-				MENU_ERROR("Invalid input");
-				MENU_PROMPT("Enter your choice");
-				continue;
-			}
-
-			ret = set_baud(uart_fd, &u, true);
-			if (ret < 0) {
-				MENU_ERROR("Error setting baud, try again");
-				MENU_PROMPT("Enter your choice");
-				continue;
-			}
-
-			*baud = u;
-			MENU_MSG("Baud was set to %u.", u);
-			TTY_READY;
-			return 0;
-
-		case ESC:
-			poll(poll_fds, poll_fds_count, 0);
-			if (poll_fds[STDIN_PFD].revents & POLLIN) {
-				control_seq(buf, &cur_pos, &last_idx);
-				continue;
-			}
-			/* fallthrough */
-		case MENU:
-			TTY_READY;
-
-			return 0;
-
-		// backspace
-		case '\b':
-		case DEL:
-			if (cur_pos == 0) {
-				fprintf(stderr, "\a");
-				continue;
-			}
-
-			if (last_idx == sizeof(buf) - 1) {
-				MENU_CLEAR_EVENT;
-			}
-
-			if (cur_pos < last_idx) {
-				memmove(&buf[cur_pos - 1], &buf[cur_pos], last_idx - cur_pos + 1);
-
-				buf[last_idx - 1] = '\0';
-				fprintf(stderr, "\033[s\033[D\033[K%s\033[%uD",
-					buf + cur_pos - 1, last_idx - cur_pos);
-			} else {
-				fprintf(stderr, "\033[D\033[P");
-			}
-			--last_idx;
-			--cur_pos;
+		ssize_t len = read(STDIN_FILENO, temp_buf, sizeof(temp_buf));
+		if (len < 0) {
+			MENU_ERROR("Reading from STDIN failed...");
 			continue;
+		} else if (len > 1) {
+			unsigned old_idx = last_idx;
+			ret = control_seq(final_buf, temp_buf, len, &cur_pos, &last_idx);
+			if (ret == 0) {
+				if (old_idx > last_idx) {
+					status_bar(uart_conf, NULL);
+				}
+				continue;
+			}
+		}
 
-		case 'q':
+		for (ssize_t i = 0; i < len; ++i) {
+			switch (temp_buf[i]) {
+			default:
+				// discard non-printable chars
+				if (temp_buf[i] < ' ' || temp_buf[i] > '~') {
+					putc('\a', stderr);
+					continue;
+				}
 
-			return -1;
+				if (last_idx >= sizeof(final_buf) - 1) {
+					status_bar(uart_conf, "Too many digits, last digit ignored!");
+					continue;
+				}
+
+				if (cur_pos < last_idx) {
+					memmove(&final_buf[cur_pos + 1], &final_buf[cur_pos], last_idx - cur_pos + 1);
+					final_buf[cur_pos] = temp_buf[i];
+					final_buf[last_idx + 1] = '\0';
+					fprintf(stderr, "\033[s\033[K%s\033[u\033[C", final_buf + cur_pos);
+				} else {
+					final_buf[last_idx] = temp_buf[i];
+					fprintf(stderr, "%c", temp_buf[i]);
+				}
+				++last_idx;
+				++cur_pos;
+
+				break;
+			case '\n':
+			case '\r':
+				if (last_idx == 0) {
+					putc('\a', stderr);
+					continue;
+				}
+				final_buf[last_idx] = '\0';
+				last_idx = 0;
+				cur_pos = 0;
+
+				unsigned u = strtouint(final_buf);
+				if (errno != 0) {
+					MENU_ERROR("Invalid input");
+					MENU_PROMPT("Enter your choice");
+					continue;
+				}
+
+				ret = set_baud(uart_conf->fd, &u, true);
+				if (ret < 0) {
+					MENU_ERROR("Error setting baud, try again");
+					MENU_PROMPT("Enter your choice");
+					continue;
+				}
+
+				uart_conf->baud = u;
+				status_bar(uart_conf, NULL);
+				MENU_MSG("Baud was set to %u.", u);
+				TTY_READY;
+				return 0;
+
+			case ESC:
+			case MENU:
+				status_bar(uart_conf, NULL);
+				TTY_READY;
+				return 0;
+
+			// backspace
+			case '\b':
+			case DEL:
+				if (cur_pos == 0) {
+					putc('\a', stderr);
+					continue;
+				}
+
+				if (last_idx == sizeof(final_buf) - 1) {
+					status_bar(uart_conf, NULL);
+				}
+
+				if (cur_pos < last_idx) {
+					memmove(&final_buf[cur_pos - 1], &final_buf[cur_pos], last_idx - cur_pos + 1);
+
+					final_buf[last_idx - 1] = '\0';
+					fprintf(stderr, "\033[s\033[D\033[K%s\033[%uD",
+						final_buf + cur_pos - 1, last_idx - cur_pos);
+				} else {
+					fprintf(stderr, "\033[D\033[P");
+				}
+				--last_idx;
+				--cur_pos;
+				continue;
+
+			case 'q':
+				return -1;
+			}
 		}
 	}
 }
 
 /* Set data bits in the interactive menu, poll() checks if the dev was disconnected */
 static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
-			  int uart_fd, unsigned *data_bits)
+			  struct uart_conf_t *uart_conf)
 {
 	int ret = -1;
 	char c = '\0';
@@ -370,9 +408,9 @@ static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 	while (true) {
 		poll(poll_fds, poll_fds_count, -1);
 		if (poll_fds[UART_PFD].revents & POLLHUP) {
-			close_uart(-1);
-			MENU_ERROR("Device disconnected, exiting.");
-			exit(ENOENT);
+			uart_conf->fd = -1;
+			MENU_ERROR("%s disconnected.", uart_conf->dev);
+			return -1;
 		} else if (!(poll_fds[STDIN_PFD].revents & POLLIN)) {
 			continue;
 		}
@@ -399,14 +437,15 @@ static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 				continue;
 			}
 
-			ret = set_data_bits(uart_fd, &u, true);
+			ret = set_data_bits(uart_conf->fd, &u, true);
 			if (ret < 0) {
 				MENU_ERROR("Error setting data bits, try again");
 				MENU_PROMPT("Enter your choice");
 				continue;
 			}
-			*data_bits = u;
 
+			uart_conf->data_bits = u;
+			status_bar(uart_conf, NULL);
 			MENU_MSG("Data bits set to %u successfully.", u);
 			/* fallthrough */
 		case MENU:
@@ -421,7 +460,7 @@ static int menu_data_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 
 /* Set parity bit in the interactive menu, poll() checks if the dev was disconnected */
 static int menu_parity_bit(struct pollfd *poll_fds, nfds_t poll_fds_count,
-			   int uart_fd, char *parity_bit)
+			   struct uart_conf_t *uart_conf)
 {
 	char c = 0;
 	int ret = 0;
@@ -440,9 +479,9 @@ static int menu_parity_bit(struct pollfd *poll_fds, nfds_t poll_fds_count,
 	while (true) {
 		poll(poll_fds, poll_fds_count, -1);
 		if (poll_fds[UART_PFD].revents & POLLHUP) {
-			close_uart(-1);
-			MENU_ERROR("Device disconnected, exiting.");
-			exit(ENOENT);
+			uart_conf->fd = -1;
+			MENU_ERROR("%s disconnected.", uart_conf->dev);
+			return -1;
 		} else if (!(poll_fds[STDIN_PFD].revents & POLLIN)) {
 			continue;
 		}
@@ -469,15 +508,16 @@ static int menu_parity_bit(struct pollfd *poll_fds, nfds_t poll_fds_count,
 		case 'm':
 		case 'S':
 		case 's':
-			ret = set_parity_bit(uart_fd, &c, true);
+			ret = set_parity_bit(uart_conf->fd, &c, true);
 			if (ret < 0) {
 				INVAL_INPUT("%c", c);
 				MENU_PROMPT("Enter your choice");
 				continue;
 			}
 
-			*parity_bit = toupper(c);
-			MENU_MSG("Parity bit set to %c successfully.", *parity_bit);
+			uart_conf->parity_bit = toupper(c);
+			status_bar(uart_conf, NULL);
+			MENU_MSG("Parity bit set to %c successfully.", uart_conf->parity_bit);
 			/* fallthrough */
 		case MENU:
 		case ESC:
@@ -491,7 +531,7 @@ static int menu_parity_bit(struct pollfd *poll_fds, nfds_t poll_fds_count,
 
 /* Set stop bits in the interactive menu, poll() checks if the dev was disconnected */
 static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
-				int uart_fd, unsigned *stop_bits)
+			  struct uart_conf_t *uart_conf)
 {
 	int ret = -1;
 	unsigned u = 0;
@@ -509,9 +549,9 @@ static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 	while (true) {
 		poll(poll_fds, poll_fds_count, 0);
 		if (poll_fds[UART_PFD].revents & POLLHUP) {
-			close_uart(-1);
-			MENU_ERROR("Device disconnected, exiting.");
-			exit(ENOENT);
+			uart_conf->fd = -1;
+			MENU_ERROR("%s disconnected.", uart_conf->dev);
+			return -1;
 		} else if (!(poll_fds[STDIN_PFD].revents & POLLIN)) {
 			continue;
 		}
@@ -529,14 +569,15 @@ static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 				continue;
 			}
 
-			ret = set_stop_bits(uart_fd, &u, true);
+			ret = set_stop_bits(uart_conf->fd, &u, true);
 			if (ret < 0) {
 				MENU_ERROR("Error setting stop bits, try again.");
 				MENU_PROMPT("Enter your choice");
 				continue;
 			}
-			*stop_bits = u;
 
+			uart_conf->stop_bits = u;
+			status_bar(uart_conf, NULL);
 			MENU_MSG("Stop bit set to %u successfully.", u);
 			/* fallthrough */
 		case MENU:
@@ -551,28 +592,93 @@ static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 	}
 }
 
-/* Interactive menu for setting baud, data, parity and stop bits. poll() checks if there is
+void init_ui(struct uart_conf_t *uart_conf)
+{
+	struct winsize ws;
+
+	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1) {
+		perror(__func__);
+		return;
+	}
+
+	fprintf(stderr, "\033[2J\033[1;%dr", ws.ws_row - 2);
+	status_bar(uart_conf, NULL);
+
+	TTY_READY;
+}
+
+ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
+{
+	ssize_t len = 0;
+	bool has_esc_J = false;
+
+	for (ssize_t i = 0; i < rw_len; ++i) {
+		if (buf[i] != ESC) {
+			continue;
+		}
+
+		++i;
+		if (i >= rw_len)
+			break;
+
+		if (buf[i] == 'c') {
+			buf[i - 1] = 0;	// ESC
+			buf[i] = 0;	// c
+		} else if (buf[i] != '[') {
+			continue;
+		}
+
+		++i;
+		if (i >= rw_len)
+			break;
+
+		if (buf[i] == 'J') {
+			has_esc_J = true;
+			continue;
+		}
+
+		if (i + 1 >= rw_len)
+			break;
+
+		if (buf[i] == '!' && buf[i + 1] == 'p') {
+			buf[i - 2] = 0;	// ESC
+			buf[i - 1] = 0;	// [
+			buf[i] = 0;	// !
+			buf[i + 1] = 0;	// p
+		} else if (buf[i + 1] == 'J') {
+			has_esc_J = true;
+		}
+	}
+
+	len = write(STDOUT_FILENO, buf, rw_len);
+
+	if (has_esc_J) {
+		status_bar(uart_conf, NULL);
+	}
+
+	return len;
+}
+
+/*
+ * Interactive menu for setting baud, data, parity and stop bits. poll() checks if there is
  * incoming data from UART while the menu is on, and if the dev disconnected.
  * Data incoming from the dev will be buffered while interacting with the menu, and shown on the
- * screen after going back to terminal. */
-int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, int poll_fds_count)
+ * screen after going back to terminal.
+ */
+int menu(struct uart_conf_t *uart_conf, struct pollfd *poll_fds, int poll_fds_count)
 {
 	char c = '\0';
 	bool incoming_data = false;
 
 	MENU_TITLE("tinycom menu");
-	MENU_OPTS("Connected to \033[4m%s\033[24m\n"
-			"Current settings: \033[1m%u %u%c%u\033[m\n\n"
-			"Menu options:\n"
-			"\tb\tset baud\n"
-			"\td\tset data bits\n"
-			"\tp\tset parity bit\n"
-			"\ts\tset stop bits\n"
-			"\tv\tpaste an ASCII file\n\n"
-			"\tC-a|ESC\texit menu\n"
-			"\tq\tquit",
-			uart_conf->dev, uart_conf->baud, uart_conf->data_bits,
-			uart_conf->parity_bit, uart_conf->stop_bits);
+	MENU_OPTS("Menu options:\n"
+		  "\tb\tset baud\n"
+		  "\td\tset data bits\n"
+		  "\tp\tset parity bit\n"
+		  "\ts\tset stop bits\n"
+		  "\tv\tpaste an ASCII file\n\n"
+		  "\tC-a|ESC\texit menu\n"
+		  "\tq\tquit");
 	MENU_PROMPT("Enter your choice");
 
 	while (true) {
@@ -581,14 +687,14 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 
 		/* Device disconnected */
 		if (poll_fds[UART_PFD].revents & POLLHUP) {
-			close_uart(-1);
-			MENU_ERROR("%s disconnected, exiting.", uart_conf->dev);
-			exit(ENOENT);
+			uart_conf->fd = -1;
+			MENU_ERROR("%s disconnected.", uart_conf->dev);
+			return -1;
 
 		/* Data coming from UART */
 		} else if (!incoming_data && poll_fds[UART_PFD].revents & POLLIN) {
 			incoming_data = true;
-			MENU_EVENT("Data incoming from UART dev.");
+			status_bar(uart_conf, "Data incoming from UART dev.");
 
 		/* Data coming from user */
 		} else if (poll_fds[STDIN_PFD].revents & POLLIN) {
@@ -600,28 +706,32 @@ int menu(int uart_fd, struct uart_conf_t *uart_conf, struct pollfd *poll_fds, in
 				MENU_PROMPT("Enter your choice");
 				/* fallthrough */
 			case ENTER:
+				putc('\a', stderr);
 				continue;
+			case 'v':
+				return menu_paste_file(poll_fds, poll_fds_count, uart_conf);
+			case 'b':
+				return menu_baud(poll_fds, poll_fds_count, uart_conf);
+			case 'd':
+				return menu_data_bits(poll_fds, poll_fds_count, uart_conf);
+			case 'p':
+				return menu_parity_bit(poll_fds, poll_fds_count, uart_conf);
+			case 's':
+				return menu_stop_bits(poll_fds, poll_fds_count, uart_conf);
 			case MENU:
 			case ESC:
+				status_bar(uart_conf, NULL);
 				TTY_READY;
 				return 0;
-			case 'v':
-				return menu_paste_file(poll_fds, poll_fds_count, uart_fd);
 			case 'q':
 				return -1;
-			case 'b':
-				return menu_baud(poll_fds, poll_fds_count,
-						 uart_fd, &uart_conf->baud);
-			case 'd':
-				return menu_data_bits(poll_fds, poll_fds_count,
-						      uart_fd, &uart_conf->data_bits);
-			case 'p':
-				return menu_parity_bit(poll_fds, poll_fds_count,
-						       uart_fd, &uart_conf->parity_bit);
-			case 's':
-				return menu_stop_bits(poll_fds, poll_fds_count,
-						      uart_fd, &uart_conf->stop_bits);
 			}
 		}
 	}
+}
+
+void close_ui(void)
+{
+	// clean status bar
+	fprintf(stderr, "\033[!p\033[0J");
 }
