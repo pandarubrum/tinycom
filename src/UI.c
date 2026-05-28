@@ -14,6 +14,11 @@
 #include "UI.h"
 #include "utils.h"
 
+#define STATUS_BAR_SIZE	2
+
+
+static struct winsize ws;
+
 
 static void status_bar(struct uart_conf_t *uart_conf, char *event_msg)
 {
@@ -22,7 +27,7 @@ static void status_bar(struct uart_conf_t *uart_conf, char *event_msg)
 		event_msg = empty_event;
 
 	fprintf(stderr, "\033[s\033[%dH\033[2K\033[1;7m %s \033[32m %u %d%c%d \033[m "
-			"\033[32mMenu: C-a\033[m \033[33m%s\033[m\033[u", USHRT_MAX,
+			"\033[1;32mMenu: C-a\033[m\t\033[1;33m%s\033[m\033[u", USHRT_MAX,
 			uart_conf->dev, uart_conf->baud, uart_conf->data_bits,
 			uart_conf->parity_bit, uart_conf->stop_bits, event_msg);
 }
@@ -592,25 +597,38 @@ static int menu_stop_bits(struct pollfd *poll_fds, nfds_t poll_fds_count,
 	}
 }
 
+/*
+ * Set up TTY to reserve rows for the status bar.
+ * This function MUST be called only once.
+ */
 void init_ui(struct uart_conf_t *uart_conf)
 {
-	struct winsize ws;
-
 	if (ioctl(STDOUT_FILENO, TIOCGWINSZ, &ws) == -1) {
 		perror(__func__);
 		return;
 	}
 
-	fprintf(stderr, "\033[2J\033[1;%dr", ws.ws_row - 2);
+	ws.ws_row -= STATUS_BAR_SIZE;
+
+	if (ioctl(STDOUT_FILENO, TIOCSWINSZ, &ws) == -1) {
+		perror(__func__);
+		return;
+	}
+
+	fprintf(stderr, "\033[2J\033[1;%dr", ws.ws_row);
 	status_bar(uart_conf, NULL);
 
 	TTY_READY;
 }
 
+/*
+ * Filter out escape sequences that interfere with the non-scrollable region of TTY where the
+ * status bar is.
+ */
 ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 {
 	ssize_t len = 0;
-	bool has_esc_J = false;
+	bool restart_status_bar = false;
 
 	for (ssize_t i = 0; i < rw_len; ++i) {
 		if (buf[i] != ESC) {
@@ -621,10 +639,15 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 		if (i >= rw_len)
 			break;
 
+		// \033c - clear screen and reset VT220 settings (hard reset)
 		if (buf[i] == 'c') {
 			buf[i - 1] = 0;	// ESC
 			buf[i] = 0;	// c
-		} else if (buf[i] != '[') {
+			continue;
+		}
+
+		// from now on, only interested in escape sequences that start with \033[
+		if (buf[i] != '[') {
 			continue;
 		}
 
@@ -632,27 +655,82 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 		if (i >= rw_len)
 			break;
 
+		// \033[J (clears beneath the cursor), re-print status bar
 		if (buf[i] == 'J') {
-			has_esc_J = true;
+			restart_status_bar = true;
 			continue;
 		}
 
 		if (i + 1 >= rw_len)
 			break;
 
+		// \033[NJ, re-print status bar
+		if (buf[i + 1] == 'J') {
+			restart_status_bar = true;
+			++i;
+			continue;
+		}
+
+		// \033[!p (soft reset), skip resetting terminal settings
 		if (buf[i] == '!' && buf[i + 1] == 'p') {
 			buf[i - 2] = 0;	// ESC
 			buf[i - 1] = 0;	// [
 			buf[i] = 0;	// !
 			buf[i + 1] = 0;	// p
-		} else if (buf[i + 1] == 'J') {
-			has_esc_J = true;
+			++i;
+			continue;
+		}
+
+		/*
+		 * \033[N;MH, prevent the cursor going to the last row where the status bar is,
+		 * which is also important for the device that relies on this to get window size
+		 * (\033[MAX;MAXH + \033[6n gets total window size)
+		 */
+
+		if (buf[i] < '0' || buf[i] > '9') {
+			continue;
+		}
+		ssize_t replace_idx = i;
+		char row_str[16];
+		int row_len = 0;
+		bool first_nums = true;
+
+		for (; i < rw_len; ++i) {
+
+			if (buf[i] >= '0' && buf[i] <= '9') {
+				// only take in consideration the N digits in \033[N;MH for rows
+				if (first_nums) {
+					row_str[row_len] = buf[i];
+					++row_len;
+				}
+
+			} else if (buf[i] == ';') {
+				first_nums = false;
+				row_str[row_len] = '\0';
+
+			} else if (buf[i] == 'H') {
+				unsigned rows = strtouint(row_str);
+				if (rows == 0 && errno != 0) {
+					break;
+				}
+
+				// check if cursor will jump into rows reserved for status bar
+				if (rows > ws.ws_row) {
+					snprintf(row_str, sizeof(row_str), "%0*u", row_len,
+						 ws.ws_row);
+					memcpy(buf + replace_idx, row_str, row_len);
+				}
+
+				break;
+			} else {
+				break;
+			}
 		}
 	}
 
 	len = write(STDOUT_FILENO, buf, rw_len);
 
-	if (has_esc_J) {
+	if (restart_status_bar) {
 		status_bar(uart_conf, NULL);
 	}
 
@@ -734,4 +812,11 @@ void close_ui(void)
 {
 	// clean status bar
 	fprintf(stderr, "\033[!p\033[0J");
+
+	// restore original winsize
+	ws.ws_row += STATUS_BAR_SIZE;
+	if (ioctl(STDOUT_FILENO, TIOCSWINSZ, &ws) == -1) {
+		perror(__func__);
+		return;
+	}
 }

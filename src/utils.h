@@ -34,12 +34,6 @@
 	fprintf(stderr, "\n\033[31m" fmt "\033[m\n", \
             ##__VA_ARGS__)
 
-#define MENU_EVENT(fmt, ...) \
-	fprintf(stderr, "\033[s\033[1A\033[G\033[2K\033[33m" fmt "\033[m\033[u\a", \
-            ##__VA_ARGS__)
-
-#define MENU_CLEAR_EVENT fprintf(stderr, "\033[s\033[1A\033[2K\033[u")
-
 #define INVAL_INPUT(fmt, ...) \
 	fprintf(stderr, "\033[31m" fmt ": invalid input\033[m\n", \
             ##__VA_ARGS__)
