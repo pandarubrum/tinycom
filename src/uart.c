@@ -69,7 +69,7 @@ static int open_dev(char **dev)
 			}
 		}
 		if (uart_fd < 0) {
-			MENU_ERROR("Device could not be found automatically, please try"
+			MENU_ERROR("Device could not be found automatically, please try "
 				  "the following:\n1) Run with root permissions.\n"
 				  "2) Specify the device path in the arguments.\n"
 				  "3) Is the device plugged?");

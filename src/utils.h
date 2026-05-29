@@ -12,7 +12,7 @@
 #define TTY_READY fprintf(stderr, "\n\n\033[1;32;7m Terminal is ready \033[m\n\n")
 
 #define MENU_TITLE(fmt) \
-	fprintf(stderr, "\n\n\033[1m........................................\033[m\n" \
+	fprintf(stderr, "\033[m\n\n\033[1m........................................\033[m\n" \
 			"\033[1;7m " fmt " \033[m\n\n")
 
 #define MENU_OPTS(fmt, ...) \

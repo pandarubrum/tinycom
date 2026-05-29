@@ -14,7 +14,7 @@
 #include "UI.h"
 #include "utils.h"
 
-#define STATUS_BAR_SIZE	2
+#define STATUS_BAR_SIZE	2U
 
 
 static struct winsize ws;
@@ -608,14 +608,8 @@ void init_ui(struct uart_conf_t *uart_conf)
 		return;
 	}
 
-	ws.ws_row -= STATUS_BAR_SIZE;
-
-	if (ioctl(STDOUT_FILENO, TIOCSWINSZ, &ws) == -1) {
-		perror(__func__);
-		return;
-	}
-
-	fprintf(stderr, "\033[2J\033[1;%dr", ws.ws_row);
+	fprintf(stderr, "\033[2J\033[1;%dr", ws.ws_row - STATUS_BAR_SIZE);
+	fprintf(stderr, "\033[2mWelcome to tinycom!");
 	status_bar(uart_conf, NULL);
 
 	TTY_READY;
@@ -715,9 +709,9 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 				}
 
 				// check if cursor will jump into rows reserved for status bar
-				if (rows > ws.ws_row) {
+				if (rows > ws.ws_row - STATUS_BAR_SIZE) {
 					snprintf(row_str, sizeof(row_str), "%0*u", row_len,
-						 ws.ws_row);
+						 ws.ws_row - STATUS_BAR_SIZE);
 					memcpy(buf + replace_idx, row_str, row_len);
 				}
 
@@ -812,11 +806,4 @@ void close_ui(void)
 {
 	// clean status bar
 	fprintf(stderr, "\033[!p\033[0J");
-
-	// restore original winsize
-	ws.ws_row += STATUS_BAR_SIZE;
-	if (ioctl(STDOUT_FILENO, TIOCSWINSZ, &ws) == -1) {
-		perror(__func__);
-		return;
-	}
 }
