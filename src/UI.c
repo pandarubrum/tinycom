@@ -618,11 +618,24 @@ void init_ui(struct uart_conf_t *uart_conf)
 /*
  * Filter out escape sequences that interfere with the non-scrollable region of TTY where the
  * status bar is.
+ *
+ * If an escape sequence is truncated when read() returns, the incomplete sequence will be merged
+ * with the rest of the sequence in the next iteration for proper parsing and processing.
  */
 ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 {
 	ssize_t len = 0;
 	bool restart_status_bar = false;
+	static char trunc_seq[14];
+	static size_t trunc_len = 0;
+
+	// if there is a truncated esc seq from previous iteration, place it at beginning of buf
+	if (trunc_len > 0) {
+		memmove(buf + trunc_len, buf, rw_len);
+		memcpy(buf, trunc_seq, trunc_len);
+		rw_len += trunc_len;
+		trunc_len = 0;
+	}
 
 	for (ssize_t i = 0; i < rw_len; ++i) {
 		if (buf[i] != ESC) {
@@ -630,10 +643,16 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 		}
 
 		++i;
-		if (i >= rw_len)
+		// if esc seq is truncated, store it in a temp buf to be merged into read buf in
+		// the next iteration
+		if (i >= rw_len) {
+			trunc_len = 1;	// len of ESC alone
+			trunc_seq[0] = ESC;
+			rw_len -= trunc_len;
 			break;
+		}
 
-		// \033c - clear screen and reset VT220 settings (hard reset)
+		// \033c - clear screen and reset terminal settings (hard reset)
 		if (buf[i] == 'c') {
 			buf[i - 1] = 0;	// ESC
 			buf[i] = 0;	// c
@@ -646,8 +665,29 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 		}
 
 		++i;
-		if (i >= rw_len)
+		// ESC + [ is stored for next iter if truncated
+		if (i >= rw_len) {
+			trunc_len = 2;	// 2 chars: ESC + [
+			trunc_seq[0] = ESC;
+			trunc_seq[1] = '[';
+			rw_len -= trunc_len;
 			break;
+		}
+
+		// \033[r (resets scrollable region)
+		if (buf[i] == 'r') {
+			char scroll_area[16];
+			// prepare allowed region
+			snprintf(scroll_area, sizeof(scroll_area), "1;%u",
+				 ws.ws_row - STATUS_BAR_SIZE);
+			size_t l = strnlen(scroll_area, sizeof(scroll_area));
+			// shift to the right to make space for scroll_area
+			memmove(buf + i + l, buf + i, rw_len - i);
+			rw_len += l;
+			// place new values
+			memcpy(buf + i, scroll_area, l);
+			continue;
+		}
 
 		// \033[J (clears beneath the cursor), re-print status bar
 		if (buf[i] == 'J') {
@@ -655,8 +695,15 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 			continue;
 		}
 
-		if (i + 1 >= rw_len)
+		// ESC + [ + <char> is stored for next iter if truncated
+		if (i + 1 >= rw_len) {
+			trunc_len = 3;
+			trunc_seq[0] = ESC;
+			trunc_seq[1] = '[';
+			trunc_seq[2] = buf[i];
+			rw_len -= trunc_len;
 			break;
+		}
 
 		// \033[NJ, re-print status bar
 		if (buf[i + 1] == 'J') {
@@ -719,6 +766,12 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 			} else {
 				break;
 			}
+		}
+		// store truncated seq ESC + [ + <char> + ... for next iteration
+		if (i == rw_len) {
+			trunc_len = i - replace_idx + 2;
+			memcpy(trunc_seq, buf + replace_idx - 2, i - replace_idx + 2);
+			rw_len -= trunc_len;
 		}
 	}
 
