@@ -805,5 +805,5 @@ int menu(struct uart_conf_t *uart_conf, struct pollfd *poll_fds, int poll_fds_co
 void close_ui(void)
 {
 	// clean status bar
-	fprintf(stderr, "\033[!p\033[0J");
+	fprintf(stderr, "\033[s\033[0J\033[r\033[u");
 }
