@@ -9,7 +9,7 @@
 #define DEL	0x7f
 
 /* List of macros for printing info, warning, error msgs or menu TUI */
-#define TTY_READY fprintf(stderr, "\n\n\033[1;32;7m Terminal is ready \033[m\n\n")
+#define TTY_READY fprintf(stderr, "\n\n\033[1;32;7m\033[2m Terminal is ready \033[m\n\n")
 
 #define MENU_TITLE(fmt) \
 	fprintf(stderr, "\033[m\n\n\033[1m........................................\033[m\n" \

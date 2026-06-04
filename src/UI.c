@@ -1,3 +1,4 @@
+#define _GNU_SOURCE
 #include <stdio.h>
 #include <errno.h>
 #include <limits.h>
@@ -14,7 +15,8 @@
 #include "UI.h"
 #include "utils.h"
 
-#define STATUS_BAR_SIZE	2U
+#define BETWEEN(var, x, y)	(var >= x && var <= y)
+#define STATUS_BAR_SIZE		2U
 
 
 static struct winsize ws;
@@ -27,8 +29,8 @@ static void status_bar(struct uart_conf_t *uart_conf, char *event_msg)
 		event_msg = empty_event;
 
 	fprintf(stderr, "\033[s\033[%dH\033[2K\033[1;7m %s \033[32m %u %d%c%d \033[m "
-			"\033[1;32mMenu: C-a\033[m\t\033[1;33m%s\033[m\033[u", USHRT_MAX,
-			uart_conf->dev, uart_conf->baud, uart_conf->data_bits,
+			"\033[1;32mMenu: C-a\033[m \033[2mtinycom\033[m\t\033[1;33m%s\033[m\033[u",
+			USHRT_MAX, uart_conf->dev, uart_conf->baud, uart_conf->data_bits,
 			uart_conf->parity_bit, uart_conf->stop_bits, event_msg);
 }
 
@@ -609,53 +611,117 @@ void init_ui(struct uart_conf_t *uart_conf)
 	}
 
 	fprintf(stderr, "\033[2J\033[1;%dr", ws.ws_row - STATUS_BAR_SIZE);
-	fprintf(stderr, "\033[2mWelcome to tinycom!");
+	fprintf(stderr, "\033[2mWelcome to tinycom!\033[m");
 	status_bar(uart_conf, NULL);
 
 	TTY_READY;
 }
 
 /*
+ * Read data from device.
+ *
  * Filter out escape sequences that interfere with the non-scrollable region of TTY where the
  * status bar is.
  *
  * If an escape sequence is truncated when read() returns, the incomplete sequence will be merged
  * with the rest of the sequence in the next iteration for proper parsing and processing.
  */
-ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
+ssize_t process_dev_data(struct uart_conf_t *uart_conf)
 {
-	ssize_t len = 0;
-	bool restart_status_bar = false;
-	static char trunc_seq[14];
+	static char trunc_seq[32];
 	static size_t trunc_len = 0;
+	int extra_buf_len = 128;
+	char buf[4096 + extra_buf_len];
+	ssize_t rd_len = 0;
+	ssize_t wr_len = 0;
+	bool restart_status_bar = false;
 
 	// if there is a truncated esc seq from previous iteration, place it at beginning of buf
 	if (trunc_len > 0) {
-		memmove(buf + trunc_len, buf, rw_len);
 		memcpy(buf, trunc_seq, trunc_len);
-		rw_len += trunc_len;
+		rd_len = trunc_len;
 		trunc_len = 0;
 	}
 
-	for (ssize_t i = 0; i < rw_len; ++i) {
+	// get new data from dev
+	ssize_t tmp_len = read(uart_conf->fd, buf + rd_len, sizeof(buf) - extra_buf_len - rd_len);
+	if (tmp_len < 0) {
+		MENU_ERROR("Reading from device failed...");
+		return -1;
+	}
+
+	/*
+	 * Go through the last occurrence of escape sequences to check completeness. If it's not
+	 * complete, the seq will be prepended to buf during the next iteration of this function.
+	 */
+	char *last_esc = memrchr(buf + rd_len, ESC, tmp_len);
+	rd_len += tmp_len;
+	if (last_esc != NULL) {
+		ssize_t last_esc_idx = last_esc - buf;
+		ssize_t i = last_esc_idx;
+		bool is_OSC_seq = false;
+
+		// check completeness, break early if esc seq was complete, TODO: deal with DCS/OSC
+		for (; i < rd_len; ++i) {
+			// first iteration
+			if (buf[i] == ESC) {
+				if (i + 1 >= rd_len)
+					continue;
+				// skip to not be caught in BETWEEN
+				else if (buf[i + 1] == '[')
+					++i;
+				// OSC esc seq, final byte could be \a
+				else if (buf[i + 1] == ']')
+					is_OSC_seq = true;
+				// skip DCS seq because it uses \033\\ as final "byte"
+				else if (buf[i + 1] == 'P')
+					break;
+			} else if (is_OSC_seq) {
+				if (buf[i] == '\a')
+					break;
+			// final byte must be in between 0x40 and 0x7e
+			} else if (BETWEEN(buf[i], '@', '~')) {
+				break;
+			}
+		}
+		// for-loop didn't break early, esc seq was incomplete, prepare trunc_seq for
+		// next iteration
+		if (i >= rd_len) {
+			trunc_len = rd_len - last_esc_idx;
+			memcpy(trunc_seq, buf + last_esc_idx, trunc_len);
+			rd_len -= trunc_len;
+		}
+	}
+
+	for (ssize_t i = 0; i < rd_len; ++i) {
 		if (buf[i] != ESC) {
 			continue;
 		}
 
+		// next char, check if last
 		++i;
-		// if esc seq is truncated, store it in a temp buf to be merged into read buf in
-		// the next iteration
-		if (i >= rw_len) {
-			trunc_len = 1;	// len of ESC alone
-			trunc_seq[0] = ESC;
-			rw_len -= trunc_len;
+		if (i >= rd_len) {
 			break;
 		}
 
-		// \033c - clear screen and reset terminal settings (hard reset)
+		// \033c (hard reset) - append scrolling reagion esc seq (\033[X;Yr)
 		if (buf[i] == 'c') {
-			buf[i - 1] = 0;	// ESC
-			buf[i] = 0;	// c
+			char scroll_area[16];
+			snprintf(scroll_area, sizeof(scroll_area), "\033[1;%ur",
+				 ws.ws_row - STATUS_BAR_SIZE);
+			size_t l = strnlen(scroll_area, sizeof(scroll_area));
+			extra_buf_len -= l;
+			if (extra_buf_len < 0) {
+				buf[i - 1] = 0;
+				buf[i] = 0;
+				continue;
+			}
+
+			memmove(buf + i + l + 1, buf + i + 1, rd_len - i - 1);
+			rd_len += l;
+			memcpy(buf + i + 1, scroll_area, l);
+			i += l;
+			restart_status_bar = true;
 			continue;
 		}
 
@@ -664,13 +730,9 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 			continue;
 		}
 
+		// next char, check if last
 		++i;
-		// ESC + [ is stored for next iter if truncated
-		if (i >= rw_len) {
-			trunc_len = 2;	// 2 chars: ESC + [
-			trunc_seq[0] = ESC;
-			trunc_seq[1] = '[';
-			rw_len -= trunc_len;
+		if (i >= rd_len) {
 			break;
 		}
 
@@ -681,11 +743,20 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 			snprintf(scroll_area, sizeof(scroll_area), "1;%u",
 				 ws.ws_row - STATUS_BAR_SIZE);
 			size_t l = strnlen(scroll_area, sizeof(scroll_area));
+			extra_buf_len -= l;
+			if (extra_buf_len < 0) {
+				buf[i - 2] = 0;
+				buf[i - 1] = 0;
+				buf[i] = 0;
+				continue;
+			}
+
 			// shift to the right to make space for scroll_area
-			memmove(buf + i + l, buf + i, rw_len - i);
-			rw_len += l;
+			memmove(buf + i + l, buf + i, rd_len - i);
+			rd_len += l;
 			// place new values
 			memcpy(buf + i, scroll_area, l);
+			i += l;
 			continue;
 		}
 
@@ -696,12 +767,7 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 		}
 
 		// ESC + [ + <char> is stored for next iter if truncated
-		if (i + 1 >= rw_len) {
-			trunc_len = 3;
-			trunc_seq[0] = ESC;
-			trunc_seq[1] = '[';
-			trunc_seq[2] = buf[i];
-			rw_len -= trunc_len;
+		if (i + 1 >= rd_len) {
 			break;
 		}
 
@@ -714,11 +780,24 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 
 		// \033[!p (soft reset), skip resetting terminal settings
 		if (buf[i] == '!' && buf[i + 1] == 'p') {
-			buf[i - 2] = 0;	// ESC
-			buf[i - 1] = 0;	// [
-			buf[i] = 0;	// !
-			buf[i + 1] = 0;	// p
-			++i;
+			char scroll_area[16];
+			snprintf(scroll_area, sizeof(scroll_area), "\033[s\033[1;%ur\033[u",
+				 ws.ws_row - STATUS_BAR_SIZE);
+			size_t l = strnlen(scroll_area, sizeof(scroll_area));
+			extra_buf_len -= l;
+			if (extra_buf_len < 0) {
+				buf[i - 2] = 0;
+				buf[i - 1] = 0;
+				buf[i] = 0;
+				buf[i + 1] = 0;
+				++i;
+				continue;
+			}
+
+			memmove(buf + i + l + 2, buf + i + 2, rd_len - i - 2);
+			rd_len += l;
+			memcpy(buf + i + 2, scroll_area, l);
+			i += l + 1;
 			continue;
 		}
 
@@ -736,7 +815,7 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 		int row_len = 0;
 		bool first_nums = true;
 
-		for (; i < rw_len; ++i) {
+		for (; i < rd_len; ++i) {
 
 			if (buf[i] >= '0' && buf[i] <= '9') {
 				// only take in consideration the N digits in \033[N;MH for rows
@@ -767,21 +846,15 @@ ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len)
 				break;
 			}
 		}
-		// store truncated seq ESC + [ + <char> + ... for next iteration
-		if (i == rw_len) {
-			trunc_len = i - replace_idx + 2;
-			memcpy(trunc_seq, buf + replace_idx - 2, i - replace_idx + 2);
-			rw_len -= trunc_len;
-		}
 	}
 
-	len = write(STDOUT_FILENO, buf, rw_len);
+	wr_len = write(STDOUT_FILENO, buf, rd_len);
 
 	if (restart_status_bar) {
 		status_bar(uart_conf, NULL);
 	}
 
-	return len;
+	return wr_len;
 }
 
 /*

@@ -99,15 +99,11 @@ int main(int argc, char *argv[])
 
 		/* Data from device */
 		} else if (poll_fds[UART_PFD].revents & POLLIN) {
-			rw_len = read(uart_conf.fd, buf, sizeof(buf));
-			if (rw_len < 0) {
-				MENU_ERROR("Reading from UART failed...");
-			}
-
-			printfUI(&uart_conf, buf, rw_len);
+			process_dev_data(&uart_conf);
 
 		/* Data from user */
 		} else if (poll_fds[STDIN_PFD].revents & POLLIN) {
+			// TODO: make process_user_data()
 			rw_len = read(STDIN_FILENO, buf, sizeof(buf));
 			if (rw_len < 0) {
 				MENU_ERROR("Reading from STDIN failed...");

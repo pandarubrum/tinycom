@@ -7,16 +7,21 @@
 void init_ui(struct uart_conf_t *uart_conf);
 
 /*
- * Print helper function that deals with filtering some VT220 escape sequences which interfere
- * with the UI. Printing relies on size (rw_len) and not C-style null-terminated strings.
+ * Deal with reading data from device, filtering some escape sequences which interfere with the UI,
+ * and writing device data to terminal.
+ *
+ * uart_conf		pointer to the configuration struct where dev, baud, data, parity, stop
+ * 			bits and device file desc are stored
+ *
+ * returns:	count of written chars on success, -1 on failure
  */
-ssize_t printfUI(struct uart_conf_t *uart_conf, char *buf, ssize_t rw_len);
+ssize_t process_dev_data(struct uart_conf_t *uart_conf);
 
 /*
  * Interactive menu:
  *
- * uart_conf		pointer to the configuration struct where dev, baud, data, parity and
- * 			stop bits values are stored
+ * uart_conf		pointer to the configuration struct where dev, baud, data, parity, stop
+ * 			bits and device file desc are stored
  * poll_fds		pointer to the poll() structs needed to check if there is data waiting
  * 			from the dev, from the user's input, or report if the dev was disconnected
  * poll_fds_count	number of fds of the poll() structs to monitor for data
