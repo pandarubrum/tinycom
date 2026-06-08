@@ -5,6 +5,7 @@
 #include <errno.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <stdbool.h>
 #include <assert.h>
 #include "uart.h"
@@ -78,11 +79,18 @@ static int open_dev(char **dev)
 		}
 
 	} else {
-		uart_fd = open(*dev, O_RDWR | O_NOCTTY);
-	}
+		// discard path if it's not a serial (char) device
+		struct stat st;
 
-	if (uart_fd < 0) {
-		MENU_ERROR("Could not open device.");
+		int ret = stat(*dev, &st);
+		if (ret < 0) {
+			return -1;
+		}
+		if (!S_ISCHR(st.st_mode)) {
+			errno = ENOTTY;
+			return -1;
+		}
+		uart_fd = open(*dev, O_RDWR | O_NOCTTY);
 	}
 
 	return uart_fd;
