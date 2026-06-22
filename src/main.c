@@ -33,16 +33,16 @@ int main(int argc, char *argv[])
 		case 'b':
 			u = strtouint(optarg);
 			if (errno != 0) {
-				MENU_ERROR("Invalid baud rate.");
-				return EINVAL;
+				MENU_ERROR("Invalid baud rate: \"%s\"", optarg);
+				return errno;
 			}
 			uart_conf.baud = u;
 			break;
 		case 'd':
 			u = strtouint(optarg);
 			if (errno != 0) {
-				MENU_ERROR("Invalid data bit value.");
-				return EINVAL;
+				MENU_ERROR("Invalid data bit value: \"%s\"", optarg);
+				return errno;
 			}
 			uart_conf.data_bits = u;
 			break;
@@ -52,8 +52,8 @@ int main(int argc, char *argv[])
 		case 's':
 			u = strtouint(optarg);
 			if (errno != 0) {
-				MENU_ERROR("Invalid stop bit value.");
-				return EINVAL;
+				MENU_ERROR("Invalid stop bit value: \"%s\"", optarg);
+				return errno;
 			}
 			uart_conf.stop_bits = u;
 			break;
@@ -69,16 +69,19 @@ int main(int argc, char *argv[])
 		uart_conf.dev = argv[optind];
 	}
 
-	/* Initialize UART device and report on failure */
+	// Initialize UART device and report on failure
 	int ret = init_uart(&uart_conf);
 	if (ret == -1) {
 		return EXIT_FAILURE;
 	}
 
 	// status bar
-	init_ui(&uart_conf);
+	ret = init_ui(&uart_conf);
+	if (ret == -1) {
+		return EXIT_FAILURE;
+	}
 
-	/* Monitor both UART device and stdin for incoming data */
+	// Monitor both UART device and STDIN for incoming data
 	struct pollfd poll_fds[] = {
 		[UART_PFD] = {uart_conf.fd, POLLIN, 0},
 		[STDIN_PFD] = {STDIN_FILENO, POLLIN, 0}
@@ -90,39 +93,40 @@ int main(int argc, char *argv[])
 	while (true) {
 		poll(poll_fds, ARRAY_SIZE(poll_fds), -1);
 
-		/* Device disconnected */
+		// Device disconnected
 		if (poll_fds[UART_PFD].revents & POLLHUP) {
-			close_uart(-1);
-			MENU_ERROR("%s disconnected, exiting.", uart_conf.dev);
 			close_ui();
+			MENU_ERROR("\n%s disconnected.", uart_conf.dev);
+			close_uart(-1);
+			MENU_INFO("Exiting.");
 			return ENOENT;
 
-		/* Data from device */
+		// Data from device
 		} else if (poll_fds[UART_PFD].revents & POLLIN) {
 			process_dev_data(&uart_conf);
 
-		/* Data from user */
+		// Data from user
 		} else if (poll_fds[STDIN_PFD].revents & POLLIN) {
 			// TODO: make process_user_data()
 			rw_len = read(STDIN_FILENO, buf, sizeof(buf));
 			if (rw_len < 0) {
-				MENU_ERROR("Reading from STDIN failed...");
+				MENU_ERROR("\nReading from STDIN failed...");
 			}
 
-			/* CTRL + A opens menu */
-			if (rw_len == 1 && buf[0] == MENU) {
+			// Alt-M opens menu
+			if (rw_len == 2 && buf[0] == ESC && buf[1] == 'm') {
 				ret = menu(&uart_conf, poll_fds, ARRAY_SIZE(poll_fds));
 				if (ret < 0) {
-					close_uart(uart_conf.fd);
-					MENU_MSG("Connection has been terminated, exiting.");
 					close_ui();
+					close_uart(uart_conf.fd);
+					MENU_INFO("Exiting.");
 					return EXIT_SUCCESS;
 				}
 
 			} else {
 				rw_len = write(uart_conf.fd, buf, rw_len);
 				if (rw_len < 0) {
-					MENU_ERROR("Writing to UART failed...");
+					MENU_ERROR("\nWriting to UART failed...");
 				}
 			}
 		}

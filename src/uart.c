@@ -28,7 +28,7 @@ static bool verify_tcsetattr(int fd, struct termios *termios_st)
 	tcgetattr(fd, &tmp);
 
 	if (memcmp(termios_st, &tmp, sizeof(struct termios)) != 0) {
-		MENU_ERROR("Changing settings failed");
+		MENU_ERROR("\nChanging settings failed");
 		errno = ENOTTY;
 		return false;
 	}
@@ -66,15 +66,16 @@ static int open_dev(char **dev)
 			uart_fd = open(default_dev[i], O_RDWR | O_NOCTTY);
 			if (uart_fd >= 0) {
 				*dev = default_dev[i];
+				MENU_INFO("Device found on %s.", *dev);
 				break;
 			}
 		}
 		if (uart_fd < 0) {
-			MENU_ERROR("Device could not be found automatically, please try "
-				  "the following:\n1) Run with root permissions.\n"
-				  "2) Specify the device path in the arguments.\n"
-				  "3) Is the device plugged?");
-			errno = EPERM;
+			MENU_ERROR("Device could not be found automatically. Possible solutions:\n"
+				  " - run with root permissions\n"
+				  " - specify the path\n"
+				  " - plug in/turn on the device");
+			errno = ENOTSUP;
 			return -1;
 		}
 
@@ -122,7 +123,7 @@ int set_baud(int uart_fd, unsigned *baud, bool set_now)
 
 		int ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
 		if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
-			MENU_ERROR("Failed to set baud to %d", *baud);
+			errno = EPERM;
 			return -1;
 		}
 
@@ -141,7 +142,7 @@ int set_data_bits(int uart_fd, unsigned *data_bits, bool set_now)
 
 	switch (*data_bits) {
 	case 0:
-		*data_bits = 8;	/* if user doesn't specify value, by default data_bits set to 8 */
+		*data_bits = 8;	// if user doesn't specify value, by default data_bits set to 8
 		/* fallthrough */
 	case 8:
 		newt_uart.c_cflag |= CS8;
@@ -156,7 +157,6 @@ int set_data_bits(int uart_fd, unsigned *data_bits, bool set_now)
 		newt_uart.c_cflag |= CS5;
 		break;
 	default:
-		MENU_ERROR("Unsupported data bit value: %d", *data_bits);
 		errno = EINVAL;
 
 		return -1;
@@ -166,7 +166,8 @@ int set_data_bits(int uart_fd, unsigned *data_bits, bool set_now)
 
 		int ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
 		if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
-			MENU_ERROR("Failed to set data bits to %u", *data_bits);
+			errno = EPERM;
+
 			return -1;
 		}
 
@@ -230,14 +231,12 @@ int set_parity_bit(int uart_fd, char *parity_bit, bool set_now)
 	case 'm':
 	case 'S':
 	case 's':
-		MENU_ERROR("Mark/Space parity not supported on this system.");
 		errno = ENOTSUP;
 
 		return -1;
 #endif
 
 	default:
-		MENU_ERROR("Unsupported parity: %c", *parity_bit);
 		errno = EINVAL;
 
 		return -1;
@@ -247,7 +246,8 @@ int set_parity_bit(int uart_fd, char *parity_bit, bool set_now)
 
 		int ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
 		if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
-			MENU_ERROR("Failed to set parity bit to %c", *parity_bit);
+			errno = EPERM;
+
 			return -1;
 		}
 
@@ -271,7 +271,6 @@ int set_stop_bits(int uart_fd, unsigned *stop_bits, bool set_now)
 		newt_uart.c_cflag |= CSTOPB;
 		break;
 	default:
-		MENU_ERROR("Unsupported stop bits: %d", *stop_bits);
 		errno = EINVAL;
 		return -1;
 	}
@@ -280,7 +279,7 @@ int set_stop_bits(int uart_fd, unsigned *stop_bits, bool set_now)
 
 		int ret = tcsetattr(uart_fd, TCSANOW, &newt_uart);
 		if (ret < 0 || !verify_tcsetattr(uart_fd, &newt_uart)) {
-			MENU_ERROR("Failed to set stop bits to %u", *stop_bits);
+			errno = EPERM;
 			return -1;
 		}
 
@@ -293,14 +292,21 @@ int set_stop_bits(int uart_fd, unsigned *stop_bits, bool set_now)
 /*
  * Configure UART device
  *
+ * Check validity of user input for baud rate, data bits, parity bit and stop bits.
+ *
  * Disable all input/output processing (newline conversion, flow control, etc.)
  * for a raw byte-for-byte communication with the serial device
  *
- * Returns -1 on failure if the setup failed in setting the new values or applying them.
+ * Returns -1 if the setup failed in setting the new values or applying them.
  */
 static int setup_uart(struct uart_conf_t *uart_conf)
 {
-	tcgetattr(uart_conf->fd, &oldt_uart);
+	int ret = tcgetattr(uart_conf->fd, &oldt_uart);
+	if (ret < 0) {
+		MENU_PERROR("Error getting UART config from device");
+		return -1;
+	}
+
 	newt_uart = oldt_uart;
 
 	newt_uart.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP
@@ -311,27 +317,38 @@ static int setup_uart(struct uart_conf_t *uart_conf)
 	newt_uart.c_cc[VMIN] = 1;
 	newt_uart.c_cc[VTIME] = 0;
 
-	set_baud(uart_conf->fd, &uart_conf->baud, false);
-
-	int ret = set_data_bits(uart_conf->fd, &uart_conf->data_bits, false);
+	ret = set_baud(uart_conf->fd, &uart_conf->baud, false);
 	if (ret < 0) {
+		MENU_PERROR("Error setting baud rate");
+		return -1;
+	}
+
+	ret = set_data_bits(uart_conf->fd, &uart_conf->data_bits, false);
+	if (ret < 0) {
+		MENU_PERROR("Error setting data bits");
 		return -1;
 	}
 	ret = set_parity_bit(uart_conf->fd, &uart_conf->parity_bit, false);
 	if (ret < 0) {
+		MENU_PERROR("Error setting parity bit");
 		return -1;
 	}
 	ret = set_stop_bits(uart_conf->fd, &uart_conf->stop_bits, false);
 	if (ret < 0) {
+		MENU_PERROR("Error setting stop bits");
 		return -1;
 	}
 
 	ret = tcsetattr(uart_conf->fd, TCSANOW, &newt_uart);
 	if (ret < 0 || !verify_tcsetattr(uart_conf->fd, &newt_uart)) {
-		MENU_ERROR("Failed to setup UART TTY");
+		MENU_PERROR("Error setting up UART");
 		return -1;
 	}
 	tcflush(uart_conf->fd, TCIOFLUSH);
+
+	MENU_INFO("Applied the following settings to %s: %u %u%c%u", uart_conf->dev,
+		  uart_conf->baud, uart_conf->data_bits, uart_conf->parity_bit,
+		  uart_conf->stop_bits);
 
 	return 0;
 }
@@ -352,7 +369,6 @@ static int setup_stdin(void)
 	int ret = tcsetattr(STDIN_FILENO, TCSADRAIN, &newt_stdin);
 
 	if (ret < 0 || !verify_tcsetattr(STDIN_FILENO, &newt_stdin)) {
-		MENU_ERROR("Could not set up terminal settings.");
 		return -1;
 	}
 
@@ -373,20 +389,21 @@ int init_uart(struct uart_conf_t *uart_conf)
 
 	uart_conf->fd = open_dev(&uart_conf->dev);
 	if (uart_conf->fd < 0) {
-		perror(__func__);
+		if (uart_conf->dev != NULL) {
+			MENU_PERROR("Cannot open \"%s\"", uart_conf->dev);
+		}
 		return -1;
 	}
 
 	int ret = setup_uart(uart_conf);
 	if (ret < 0) {
-		perror(__func__);
 		close_uart(uart_conf->fd);
 		return -1;
 	}
 
 	ret = setup_stdin();
 	if (ret < 0) {
-		perror(__func__);
+		MENU_PERROR("Could not set up STDIN");
 		close_uart(uart_conf->fd);
 		return -1;
 	}
@@ -399,13 +416,14 @@ void close_uart(int uart_fd)
 {
 	/* if UART dev was open restore termios settings, verify and close fd */
 	if (uart_fd >= 0) {
-		if (memcmp(&oldt_uart, &newt_uart, (sizeof(struct termios))) != 0) {
-			int ret = tcsetattr(uart_fd, TCSANOW, &oldt_uart);
+		int ret = tcgetattr(uart_fd, &newt_uart);
+		if (ret >= 0 && memcmp(&oldt_uart, &newt_uart, (sizeof(struct termios))) != 0) {
+			ret = tcsetattr(uart_fd, TCSANOW, &oldt_uart);
 			if (ret < 0 || !verify_tcsetattr(uart_fd, &oldt_uart)) {
 				MENU_ERROR("Error restoring UART settings.");
 			} else {
 				tcflush(uart_fd, TCIOFLUSH);
-				MENU_MSG("UART settings were restored.");
+				MENU_INFO("UART settings were restored.");
 			}
 		}
 		close(uart_fd);
@@ -417,7 +435,7 @@ void close_uart(int uart_fd)
 		if (ret < 0 || !verify_tcsetattr(STDIN_FILENO, &oldt_stdin)) {
 			MENU_ERROR("Error restoring terminal settings.");
 		} else {
-			MENU_MSG("Terminal settings were restored.");
+			MENU_INFO("Terminal settings were restored.");
 		}
 	}
 }

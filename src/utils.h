@@ -2,44 +2,50 @@
 
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 
-/* Macros for key strokes used in the menu */
-#define ENTER	0x0d
-#define ESC	0x1b
-#define MENU	0x01
-#define DEL	0x7f
+/*
+ * Macros for keystrokes used in the menu
+ */
+#define ENTER		0x0d
+#define ESC		0x1b
+#define BACKSPACE	0x7f
 
-/* List of macros for printing info, warning, error msgs or menu TUI */
-#define TTY_READY fprintf(stderr, "\n\n\033[1;32;7m\033[2m Terminal is ready \033[m\n\n")
-
-#define MENU_TITLE(fmt) \
-	fprintf(stderr, "\033[m\n\n\033[1m........................................\033[m\n" \
-			"\033[1;7m " fmt " \033[m\n\n")
-
-#define MENU_OPTS(fmt, ...) \
-	fprintf(stderr, fmt "\n\n\n", \
-            ##__VA_ARGS__)
-
+/*
+ * List of macros for printing info, warning, error msgs
+ */
 #define MENU_PROMPT(fmt) \
-	fprintf(stderr, fmt " \033[1m>\033[m ");
+	fprintf(stderr, "\033[2K\033[G" fmt " \033[1m>\033[m ");
 
-#define MENU_MSG(fmt, ...) \
-	fprintf(stderr, "\n\033[32m" fmt "\033[m\n", \
-            ##__VA_ARGS__)
+#define MENU_INFO(fmt, ...) \
+	fprintf(stderr, "\033[32m" fmt "\033[m\n", ##__VA_ARGS__)
 
 #define MENU_WARN(fmt, ...) \
-	fprintf(stderr, "\n\033[33m" fmt "\033[m\n", \
-            ##__VA_ARGS__)
+	fprintf(stderr, "\033[33m" fmt "\033[m\n", ##__VA_ARGS__)
 
 #define MENU_ERROR(fmt, ...) \
-	fprintf(stderr, "\n\033[31m" fmt "\033[m\n", \
-            ##__VA_ARGS__)
+	fprintf(stderr, "\033[31m" fmt "\033[m\n", ##__VA_ARGS__)
 
-#define INVAL_INPUT(fmt, ...) \
-	fprintf(stderr, "\033[31m" fmt ": invalid input\033[m\n", \
-            ##__VA_ARGS__)
+#define MENU_PERROR(fmt, ...) \
+	fprintf(stderr, "\033[31m" fmt ": %s\033[m\n", ##__VA_ARGS__, strerror(errno))
+
+#define MENU_END	fprintf(stderr, "\033[G\033[K\033[2;3m(Menu closed)\033[m\n")
+
+#define POPUP_INFO(fmt, ...) \
+	fprintf(stderr, "\033[s\033[A\033[G\033[32m" fmt "\033[m\033[u", ##__VA_ARGS__)
+
+#define POPUP_INVAL(fmt, ...) \
+	fprintf(stderr, "\033[s\033[A\033[G\033[31m\"" fmt "\": Invalid input\033[m\033[u", \
+		##__VA_ARGS__)
+
+#define POPUP_PERROR(fmt, ...) \
+	fprintf(stderr, "\033[s\033[A\033[G\033[31m" fmt ": %s\033[m\033[u", \
+		##__VA_ARGS__, strerror(errno))
+
+#define CLEAR_POPUP	fprintf(stderr, "\033[s\033[A\033[2K\033[u")
 
 
-/* Used to avoid magic-number inconsistencies */
+/*
+ * Used to avoid magic-number inconsistencies
+ */
 enum {
 	STDIN_PFD,
 	UART_PFD

@@ -2,9 +2,13 @@
 
 
 /*
- * Prepare UI, clean the screen, print status bar, and set VT220 terminal settings.
+ * Prepare UI, clean the screen, print status bar, and set terminal settings.
+ * uart_conf            pointer to the configuration struct where dev, baud, data, parity, stop
+ * 			bits and device file desc are stored
+ *
+ * returns:     count of written chars on success, -1 on failure
  */
-void init_ui(struct uart_conf_t *uart_conf);
+int init_ui(struct uart_conf_t *uart_conf);
 
 /*
  * Deal with reading data from device, filtering some escape sequences which interfere with the UI,
@@ -28,9 +32,9 @@ ssize_t process_dev_data(struct uart_conf_t *uart_conf);
  *
  * returns:	0 on success, -1 on failure
  */
-int menu(struct uart_conf_t *uart_conf, struct pollfd *poll_fds, int poll_fds_count);
+int menu(struct uart_conf_t *uart_conf, struct pollfd *poll_fds, nfds_t poll_fds_count);
 
 /*
- * Close UI, clean the screen and reset VT220 terminal settings.
+ * Close UI, clean the screen and reset terminal settings.
  */
 void close_ui(void);
