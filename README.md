@@ -19,28 +19,36 @@ cmake --build build
 
 Synopsis:
 ```bash
-$ build/tinycom [-b baud] [-d data_bits] [-p parity] [-s stop_bits] [device]
+$ build/tinycom [-b baud rate] [-d data bits] [-p parity bit] [-s stop bits] [device]
 ```
 
 | Flag | Action |
 |------|--------|
 | `-b` | set baud rate |
 | `-d` | set data bits |
-| `-p` | set parity |
-| `-s` | set stop bit |
+| `-p` | set parity bit |
+| `-s` | set stop bits |
 
 
 ## Menu
 
-There is an interactive menu inside `tinycom`, it is accessible via `CONTROL+A`.
+There is an interactive menu inside `tinycom`, it is accessible via `Alt-M`.
 
-| Options | Action |
-|---------|--------|
-| `b` | set baud rate |
-| `d` | set data bits |
-| `p` | set parity |
-| `s` | set stop bit |
-| `v` | paste ASCII file |
-| `ESC` | go back to TTY |
-| `q` | quit tinycom |
+| Option | Action |
+|--------|--------|
+| `B` | set baud rate |
+| `D` | set data bits |
+| `P` | set parity bit |
+| `S` | set stop bits |
+| `V` | paste ASCII file |
+| `ESC/Alt-M` | go back to TTY |
+| `Alt-Q` | quit tinycom |
 
+
+## Tested on
+
+- `tinycom` running on Debian (`x86_64`), Linux kernel `7.0.4+deb14-amd64`, glibc `2.42-16`
+- LicheePi 4A (`riscv64`) running Debian, Linux kernel `6.6.119-th1520`
+- Raspberry Pi 3 Model B Rev 1.2, running Debian, Linux kernel `6.12.87+rpt-rpi-v8`
+- ESP32-C3 (`riscv64`)
+- Arduino Uno R3 ATmega328P
